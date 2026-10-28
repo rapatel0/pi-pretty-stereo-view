@@ -14,7 +14,7 @@ Pristine upstream sources for inspection live in `reference/` (gitignored, not s
 ## Install
 
 ```bash
-pi install /localpool/pi-pretty-stereo-view
+pi install git:github.com/rapatel0/pi-pretty-stereo-view
 ```
 
 Remove the standalone packages from `~/.pi/agent/settings.json` (`packages.npm` entries for `pi-stereo-view`, `pi-powerline-footer`, `pi-pretty-tui`) so commands are not registered twice.
