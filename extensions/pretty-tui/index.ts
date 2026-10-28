@@ -808,6 +808,9 @@ export default function prettyTui(pi: ExtensionAPI) {
     const patchedEditorRender = function (this: any, width: number): string[] {
       currentPromptEditor = this;
       if (width < 3) return originalEditorRender.call(this, width);
+      // pi-powerline-footer's editor chrome draws the rounded frame itself; a
+      // second frame would double borders and break its bottom-rule detection.
+      if (this.powerlineEditorChromeActive === true) return originalEditorRender.call(this, width);
 
       const innerWidth = width - 2;
       const lines = originalEditorRender.call(this, innerWidth) as string[];
@@ -827,6 +830,7 @@ export default function prettyTui(pi: ExtensionAPI) {
     };
     const patchedEditorHandleMouse = function (this: any, event: any) {
       if (event.width < 3) return originalEditorHandleMouse.call(this, event);
+      if (this.powerlineEditorChromeActive === true) return originalEditorHandleMouse.call(this, event);
       const innerWidth = event.width - 2;
       return originalEditorHandleMouse.call(this, {
         ...event,

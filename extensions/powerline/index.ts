@@ -71,6 +71,12 @@ import { PowerlineQueueStore, currentQueueContext, formatQueueDeliveryText, pars
 import { canWaitAsFollowUp } from "./auto-follow-up.ts";
 import type { PowerlineQueueItem, QueueContext, QueueIntent, QueueSummary, QueueTarget } from "./queue/types.ts";
 
+// ESC is a control character matched on purpose; built dynamically so the
+// pattern text contains no literal control character for regex-lint rules.
+const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
+const ANSI_SGR_PATTERN = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
+const STASH_HISTORY_CSI_U_PATTERN = new RegExp(`^${ANSI_ESCAPE_CHAR}\\[104(?::\\d*)?(?::\\d*)?;7(?::\\d+)?u$`);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════
@@ -604,7 +610,7 @@ function persistStashHistory(history: string[]): void {
 
   try {
     mkdirSync(dirname(stashHistoryPath), { recursive: true });
-    writeFileSync(stashHistoryPath, JSON.stringify(payload, null, 2) + "\n");
+    writeFileSync(stashHistoryPath, `${JSON.stringify(payload, null, 2)}\n`);
   } catch (error) {
     console.debug(`[powerline-footer] Failed to persist stash history to ${stashHistoryPath}:`, error);
   }
@@ -632,7 +638,7 @@ function writePowerlineSetting(cwd: string, update: (existingPowerlineSetting: u
 
   try {
     mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
     return true;
   } catch (error) {
     console.debug(`[powerline-footer] Failed to persist powerline setting to ${settingsPath}:`, error);
@@ -716,7 +722,14 @@ function reservedShortcuts(): Set<string> {
 
   for (const definition of Object.values(TUI_KEYBINDINGS)) {
     const defaultKeys = definition.defaultKeys;
-    const keys = defaultKeys === undefined ? [] : Array.isArray(defaultKeys) ? defaultKeys : [defaultKeys];
+    let keys: string[];
+    if (defaultKeys === undefined) {
+      keys = [];
+    } else if (Array.isArray(defaultKeys)) {
+      keys = defaultKeys;
+    } else {
+      keys = [defaultKeys];
+    }
     for (const key of keys) {
       shortcuts.add(normalizeShortcut(key));
     }
@@ -885,12 +898,12 @@ export function parseBashModeSettings(settings: Record<string, unknown>, powerli
   const fallbackToggleShortcut = used.has(shortcutUsageKey(DEFAULT_BASH_MODE_SETTINGS.toggleShortcut))
     ? null
     : DEFAULT_BASH_MODE_SETTINGS.toggleShortcut;
-  const toggleShortcut = configuredToggleShortcut === null
-    ? null
-    : configuredToggleShortcut
-      && !used.has(shortcutUsageKey(configuredToggleShortcut))
-      ? configuredToggleShortcut
-      : fallbackToggleShortcut;
+  let toggleShortcut: string | null = fallbackToggleShortcut;
+  if (configuredToggleShortcut === null) {
+    toggleShortcut = null;
+  } else if (configuredToggleShortcut && !used.has(shortcutUsageKey(configuredToggleShortcut))) {
+    toggleShortcut = configuredToggleShortcut;
+  }
 
   if (configuredToggleShortcut && toggleShortcut !== configuredToggleShortcut) {
     console.debug(
@@ -1063,8 +1076,10 @@ export function renderFastPowerlineEditor(
 
   Reflect.set(editor as object, "lastWidth", layoutWidth);
 
-  const border = (marker: "↑" | "↓" | "─") => {
-    const text = marker === "─" ? "─".repeat(width - 2) : `${marker}${"─".repeat(Math.max(0, width - 3))}`;
+  const ruleLine = (position: "top" | "bottom"): string =>
+    position === "top" ? `╭${"─".repeat(Math.max(0, width - 4))}╮` : `╰${"─".repeat(Math.max(0, width - 4))}╯`;
+  const border = (marker: "↑" | "↓" | "─", position: "top" | "bottom") => {
+    const text = marker === "─" ? ruleLine(position) : `${marker}${"─".repeat(Math.max(0, width - 3))}`;
     return ` ${colorEditorBorder(editor, text)}`;
   };
   const promptGlyph = options.bashModeActive ? "$" : ">";
@@ -1072,7 +1087,7 @@ export function renderFastPowerlineEditor(
   const promptPrefix = ` ${prompt} `;
   const contPrefix = "   ";
 
-  const lines = [border(viewport.hasBefore ? "↑" : "─")];
+  const lines = [border(viewport.hasBefore ? "↑" : "─", "top")];
   for (let index = 0; index < viewport.lines.length; index++) {
     const visual = viewport.lines[index]!;
     const content = visual.cursorCol === undefined
@@ -1080,7 +1095,7 @@ export function renderFastPowerlineEditor(
       : renderFastCursorLine(visual.text, visual.cursorCol, Reflect.get(editor as object, "focused") === true);
     lines.push(`${index === 0 ? promptPrefix : contPrefix}${padToWidth(content, innerWidth)}`);
   }
-  lines.push(border(viewport.hasAfter ? "↓" : "─"));
+  lines.push(border(viewport.hasAfter ? "↓" : "─", "bottom"));
   return lines;
 }
 
@@ -1148,8 +1163,8 @@ function computeResponsiveLayout(
   // Reserve the configured outer padding on both edges of every row.
   const baseOverhead = 2 * config.padding;
   let currentWidth = baseOverhead;
-  let topSegments: string[] = [];
-  let overflowSegments: { content: string; width: number }[] = [];
+  const topSegments: string[] = [];
+  const overflowSegments: { content: string; width: number }[] = [];
   let overflow = false;
 
   for (const seg of renderedSegments) {
@@ -1838,7 +1853,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     if (item) await chooseQueueAction(ctx, item);
   }
 
-  function resolveCommandTarget(ctx: any, spec: string): QueueTarget {
+  function resolveCommandTarget(_ctx: any, spec: string): QueueTarget {
     const normalized = spec.trim().replace(/^@/, "");
     if (normalized === "current") return { kind: "current-session" };
     if (normalized === "global") return { kind: "global" };
@@ -2152,7 +2167,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     requestQueueRender();
   });
 
-  pi.on("session_compact", async (event, ctx) => {
+  pi.on("session_compact", async (_event, ctx) => {
     powerlineCompacting = false;
     currentCtx = ctx;
     isStreaming = false;
@@ -2354,7 +2369,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   function isPromptHistoryShortcutInput(data: string): boolean {
     return matchesConfiguredShortcut(data, resolvedShortcuts.stashHistory)
       || (resolvedShortcuts.stashHistory === "ctrl+alt+h" && (
-        /^\x1b\[104(?::\d*)?(?::\d*)?;7(?::\d+)?u$/.test(data)
+        STASH_HISTORY_CSI_U_PATTERN.test(data)
         || data === "\x1b[27;7;104~"
         || data === "\x1b[27;7;72~"
       ));
@@ -2663,9 +2678,11 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       const placementMatch = /^placement(?:\s+(above|below|toggle))?$/.exec(normalizedArgs);
       if (placementMatch) {
         const requestedPlacement = placementMatch[1];
-        config.placement = requestedPlacement === "above" || requestedPlacement === "below"
-          ? requestedPlacement
-          : config.placement === "above" ? "below" : "above";
+        if (requestedPlacement === "above" || requestedPlacement === "below") {
+          config.placement = requestedPlacement;
+        } else {
+          config.placement = config.placement === "above" ? "below" : "above";
+        }
         config.invalidPlacement = null;
         if (enabled && ctx.hasUI) setupCustomEditor(ctx);
 
@@ -3078,11 +3095,12 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     const summary = getQueueSummary(currentCtx);
     if (!summary.leadingText) return [];
 
-    const prefix = summary.leadingStatus === "blocked" || summary.leadingStatus === "failed"
-      ? "blocked: "
-      : summary.leadingStatus === "delivering"
-        ? "sending: "
-        : "queued: ";
+    let prefix = "queued: ";
+    if (summary.leadingStatus === "blocked" || summary.leadingStatus === "failed") {
+      prefix = "blocked: ";
+    } else if (summary.leadingStatus === "delivering") {
+      prefix = "sending: ";
+    }
     const text = `${prefix}${summary.leadingText.replace(/\s+/g, " ").trim()}`;
     const color = summary.leadingStatus === "blocked" || summary.leadingStatus === "failed" ? "warning" : "dim";
     return [` ${theme.fg(color, truncateToWidth(text, Math.max(1, width - 1), "…"))}`];
@@ -3110,11 +3128,14 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     const recentCommands = snapshot.commands.slice(-4);
     for (const command of recentCommands) {
       const promptGlyph = (shellSession?.state.shellName ?? "shell") === "fish" ? ">" : "$";
-      const status = command.exitCode === null
-        ? theme.fg("accent", "running")
-        : command.exitCode === 0
-          ? theme.fg("success", "ok")
-          : theme.fg("error", `exit ${command.exitCode}`);
+      let status: string;
+      if (command.exitCode === null) {
+        status = theme.fg("accent", "running");
+      } else if (command.exitCode === 0) {
+        status = theme.fg("success", "ok");
+      } else {
+        status = theme.fg("error", `exit ${command.exitCode}`);
+      }
       const commandLine = truncateToWidth(command.command.replace(/\s+/g, " ").trim(), Math.max(8, width - 8), "…");
       lines.push(` ${theme.fg("accent", promptGlyph)} ${commandLine} ${theme.fg("dim", "(")}${status}${theme.fg("dim", ")")}`);
 
@@ -3459,6 +3480,11 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           }
         : handlePowerlineEditorInput;
 
+      // pi-pretty-tui defers its own rounded editor frame while this chrome is
+      // present, so exactly one component draws the editor border.
+      if (editorPerf.options.editorChrome) {
+        Reflect.set(editor, "powerlineEditorChromeActive", true);
+      }
       const originalRender = editor.render.bind(editor);
       editor.render = (width: number): string[] => {
         const renderPowerlineEditor = (): string[] => {
@@ -3504,8 +3530,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
           let bottomBorderIndex = lines.length - 1;
           for (let i = lines.length - 1; i >= 1; i--) {
-            const stripped = lines[i]?.replace(/\x1b\[[0-9;]*m/g, "") || "";
-            if (stripped.length > 0 && /^─{3,}/.test(stripped)) {
+            const stripped = lines[i]?.replace(ANSI_SGR_PATTERN, "") || "";
+            if (stripped.length > 0 && /^(?:─{3,}|╰─)/.test(stripped)) {
               bottomBorderIndex = i;
               break;
             }
@@ -3516,7 +3542,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           // it. The base render above ran at contentWidth, so an embedded line
           // has to be re-rendered at the width this frame actually uses.
           const embeddedTopBorder = editor.renderEmbeddedTopBorder(width - 2);
-          result.push(" " + (embeddedTopBorder ?? colorEditorBorder(editor, "─".repeat(width - 2))));
+          result.push(` ${embeddedTopBorder ?? colorEditorBorder(editor, `╭${"─".repeat(Math.max(0, width - 4))}╮`)}`);
 
           for (let i = 1; i < bottomBorderIndex; i++) {
             const prefix = i === 1 ? promptPrefix : contPrefix;
@@ -3527,7 +3553,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
             result.push(`${promptPrefix}${" ".repeat(contentWidth)}`);
           }
 
-          result.push(" " + colorEditorBorder(editor, "─".repeat(width - 2)));
+          result.push(` ${colorEditorBorder(editor, `╰${"─".repeat(Math.max(0, width - 4))}╯`)}`);
 
           for (let i = bottomBorderIndex + 1; i < lines.length; i++) {
             result.push(lines[i] || "");
