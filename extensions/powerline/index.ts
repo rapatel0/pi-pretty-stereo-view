@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 
 import type { ColorScheme, SegmentContext, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./types.ts";
 import type { PowerlineConfig } from "./powerline-config.ts";
+import { setPowerlineBridge } from "../integrated/bridges.js";
 import { BashTranscriptStore } from "./bash-mode/transcript.ts";
 import {
   BashCompletionEngine,
@@ -2626,9 +2627,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   });
 
   // Command to toggle/configure
-  pi.registerCommand("powerline", {
-    description: "Configure powerline status (toggle, preset)",
-    handler: async (args, ctx) => {
+  const powerlineCommandHandler = async (args: string, ctx: any): Promise<void> => {
       // Update context reference (command ctx may have more methods)
       currentCtx = ctx;
 
@@ -2713,7 +2712,21 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       // Show available presets
       const presetList = Object.keys(PRESETS).join(", ");
       ctx.ui.notify(`Available presets: ${presetList}`, "info");
-    },
+  };
+
+  pi.registerCommand("powerline", {
+    description: "Configure powerline status (toggle, preset)",
+    handler: (args, ctx) => powerlineCommandHandler(args, ctx),
+  });
+
+  // Settings-panel bridge: /ui-settings reads status and drives the real
+  // command handler through this registration, never a copy of it.
+  setPowerlineBridge({
+    statusLine: () => `${enabled ? "on" : "off"} · ${config.placement} · preset ${config.preset}`,
+    enabled: () => enabled,
+    placement: () => config.placement,
+    preset: () => config.preset,
+    runCommand: (cmd, panelCtx) => powerlineCommandHandler(cmd, panelCtx),
   });
 
   pi.registerCommand("stash-history", {

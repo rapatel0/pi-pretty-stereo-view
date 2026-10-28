@@ -34,3 +34,47 @@ export function markStereoDetaching(): void {
   stereoAttached = false;
   for (const listener of [...detachingListeners]) listener();
 }
+
+/**
+ * Settings-panel bridges: each vendored extension publishes a small control
+ * surface here so the unified `/ui-settings` panel can read state and apply
+ * changes live, without inventing a second source of truth for any config.
+ */
+
+export type PanelUi = { notify(message: string, type?: "info" | "warning" | "error"): void };
+export type PanelContext = { ui: PanelUi; reload?(): Promise<void> };
+
+export type PrettyTuiBridge = {
+  statusLine(): string;
+  enabled(): boolean;
+  mode(): string;
+  sideBorders(): boolean;
+  setMode(mode: "full" | "compact" | "clean"): void;
+  setSideBorders(on: boolean): void;
+  setEnabled(on: boolean, ctx: PanelContext): Promise<void>;
+};
+
+let prettyTuiBridge: PrettyTuiBridge | undefined;
+export const setPrettyTuiBridge = (bridge: PrettyTuiBridge): void => { prettyTuiBridge = bridge; };
+export const getPrettyTuiBridge = (): PrettyTuiBridge | undefined => prettyTuiBridge;
+
+export type StereoBridge = {
+  statusLine(): string;
+  openSettings(ui: unknown): Promise<void>;
+};
+
+let stereoBridge: StereoBridge | undefined;
+export const setStereoBridge = (bridge: StereoBridge): void => { stereoBridge = bridge; };
+export const getStereoBridge = (): StereoBridge | undefined => stereoBridge;
+
+export type PowerlineBridge = {
+  statusLine(): string;
+  enabled(): boolean;
+  placement(): "above" | "below";
+  preset(): string;
+  runCommand(args: string, ctx: unknown): Promise<void>;
+};
+
+let powerlineBridge: PowerlineBridge | undefined;
+export const setPowerlineBridge = (bridge: PowerlineBridge): void => { powerlineBridge = bridge; };
+export const getPowerlineBridge = (): PowerlineBridge | undefined => powerlineBridge;

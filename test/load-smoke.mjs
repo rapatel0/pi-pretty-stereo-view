@@ -57,6 +57,25 @@ try {
   const mod = await jiti.import(pathToFileURL(join(root, "extensions/index.ts")).href);
   await mod.default(pi);
   console.log(`FACTORIES OK events=${registered.events.length} commands=[${[...new Set(registered.commands)].join(",")}] shortcuts=${registered.shortcuts.length} tools=${registered.tools.length}`);
+  const commands = new Set(registered.commands);
+  for (const required of ["ui-settings", "sidebar", "powerline", "pretty-tui", "stereo-view"]) {
+    if (!commands.has(required)) {
+      failures++;
+      console.log(`SMOKE FAIL command "${required}" not registered`);
+    }
+  }
+  // The unified panel drives each component through its bridge; a missing
+  // bridge means /ui-settings would show dead sections.
+  const bridges = await jiti.import(pathToFileURL(join(root, "extensions/integrated/bridges.js")).href);
+  for (const [name, getter] of [["pretty-tui", "getPrettyTuiBridge"], ["stereo", "getStereoBridge"], ["powerline", "getPowerlineBridge"]]) {
+    const bridge = bridges[getter]?.();
+    if (bridge && typeof bridge.statusLine === "function") {
+      console.log(`BRIDGE OK   ${name}: ${bridge.statusLine()}`);
+    } else {
+      failures++;
+      console.log(`SMOKE FAIL ${name} bridge not registered`);
+    }
+  }
 } catch (error) {
   failures++;
   console.log(`FACTORIES FAIL\n${String(error.stack).split("\n").slice(0, 10).join("\n")}`);

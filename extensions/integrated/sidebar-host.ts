@@ -17,7 +17,16 @@ type UsageLike = { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown; o
  * Right-side sidebar (sessions, context, tool usage) from pi-ui-extension,
  * mounted over whatever layout the stereo split owns and fully toggleable.
  */
-export function installSidebarHost(pi: ExtensionAPI): void {
+export type SidebarControls = {
+  statusLine(): string;
+  isEnabled(): boolean;
+  setEnabled(on: boolean): void;
+  setWidth(width: number | undefined): void;
+  autoHideBelow(): number;
+  setAutoHideBelow(columns: number): void;
+};
+
+export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   const settings = loadSettings();
   let enabled = settings.sidebarEnabled;
   let width = settings.sidebarWidth;
@@ -315,6 +324,20 @@ export function installSidebarHost(pi: ExtensionAPI): void {
     }
   };
 
+  const applyWidth = (next: number | undefined): void => {
+    width = next;
+    persist();
+    teardownController();
+    if (reinstallRef) reinstallRef();
+    else if (lastCtx) void mountSidebar(lastCtx);
+  };
+
+  const applyAutoHide = (columns: number): void => {
+    autoHideBelow = Math.max(0, Math.min(200, columns));
+    persist();
+    if (reinstallRef) reinstallRef();
+  };
+
   onStereoDetaching(() => disposeSidebar());
 
   // --- Lifecycle ------------------------------------------------------------
@@ -435,27 +458,21 @@ export function installSidebarHost(pi: ExtensionAPI): void {
       else if (verb === "on") setEnabled(true);
       else if (verb === "off") setEnabled(false);
       else if (verb === "width" && /^\d+$/.test(amount ?? "")) {
-        width = Number(amount);
-        persist();
-        teardownController();
-        if (reinstallRef) reinstallRef();
-        else if (lastCtx) void mountSidebar(lastCtx);
+        applyWidth(Number(amount));
       } else if (verb === "autohide") {
-        if (amount === "off") autoHideBelow = 0;
-        else if (amount === "default" || amount === undefined) autoHideBelow = DEFAULT_SETTINGS.sidebarAutoHideBelow;
-        else if (/^\d+$/.test(amount)) autoHideBelow = Math.max(0, Math.min(200, Number(amount)));
+        if (amount === "off") applyAutoHide(0);
+        else if (amount === "default" || amount === undefined) applyAutoHide(DEFAULT_SETTINGS.sidebarAutoHideBelow);
+        else if (/^\d+$/.test(amount)) applyAutoHide(Number(amount));
         else {
           ctx.ui.notify("Usage: /sidebar autohide [columns|off|default]", "warning");
           return;
         }
-        persist();
         ctx.ui.notify(
           autoHideBelow === 0
             ? "Sidebar auto-hide disabled"
             : `Sidebar auto-hides below ${autoHideBelow} columns`,
           "info",
         );
-        if (reinstallRef) reinstallRef();
       } else if (verb === "status") {
         const state = !enabled
           ? "off"
@@ -478,4 +495,13 @@ export function installSidebarHost(pi: ExtensionAPI): void {
     description: "Toggle the right sidebar",
     handler: async () => setEnabled(!enabled),
   });
+
+  return {
+    statusLine: () => `${enabled ? "on" : "off"} · width ${width ?? "auto"} · ${autoHideBelow === 0 ? "auto-hide off" : `auto-hide below ${autoHideBelow} cols`}${hiddenByWidth ? " · hidden now" : ""}`,
+    isEnabled: () => enabled,
+    setEnabled,
+    setWidth: applyWidth,
+    autoHideBelow: () => autoHideBelow,
+    setAutoHideBelow: applyAutoHide,
+  };
 }

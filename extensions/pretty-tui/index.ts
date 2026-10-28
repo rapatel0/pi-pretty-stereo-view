@@ -3,6 +3,7 @@ import { cardMargin, cardBackground, frameNativeRows, nativeFrameWidth, setSideB
 import { ThoughtPresentation } from "./thought-presentation.js";
 import { isThirdPartyTool, renderToolProjection, toolLabel, type ToolProjection } from "./tool-presentation.js";
 import { NestedTools, NESTED_SNAPSHOT_ENTRY } from "./nested-tools.js";
+import { setPrettyTuiBridge } from "../integrated/bridges.js";
 import {
   AssistantMessageComponent,
   CustomEditor,
@@ -85,7 +86,7 @@ export default function prettyTui(pi: ExtensionAPI) {
   const configPath = join(getAgentDir(), "pretty-tui.json");
   let config = loadConfig(configPath);
   const activeForSession = config.enabled !== false;
-  const sideBordersEnabled = config.sideBorders !== false;
+  let sideBordersEnabled = config.sideBorders !== false;
   setSideBorders(sideBordersEnabled);
   const configuredMode = config.mode ?? config.bash?.mode;
   let renderMode: PrettyTuiMode = configuredMode === "full" || configuredMode === "compact" || configuredMode === "clean"
@@ -673,6 +674,25 @@ export default function prettyTui(pi: ExtensionAPI) {
   const saveRenderMode = (mode: PrettyTuiMode) => saveConfig({ ...config, mode });
   const saveEnabled = (enabled: boolean) => saveConfig({ ...config, enabled });
 
+  const applySideBorders = (on: boolean): void => {
+    sideBordersEnabled = on;
+    setSideBorders(on);
+    saveConfig({ ...config, sideBorders: on });
+    currentTui?.requestRender();
+  };
+
+  const applyMode = (mode: PrettyTuiMode): void => {
+    cleanCompactToolCallIds.clear();
+    revealedActivityGroups.clear();
+    collapsedActivityGroups.clear();
+    expandedThinkingMembers.clear();
+    renderMode = mode;
+    if (cleanRun.active && !cleanRun.settled) startWorkingElapsedTimer();
+    refreshLatestActivityWidget();
+    for (const component of toolComponents.values()) component.updateDisplay?.();
+    for (const component of thinkingComponents.values()) component.invalidate?.();
+  };
+
   pi.registerCommand("pretty-tui", {
     description: "Configure pi-pretty-tui",
     getArgumentCompletions: (prefix: string) => {
@@ -683,12 +703,33 @@ export default function prettyTui(pi: ExtensionAPI) {
         { value: "compact", label: "compact", description: "Concise summaries for all built-in tools" },
         { value: "clean", label: "clean", description: "Group supported tools into Running/Done status" },
         { value: "status", label: "status", description: "Show the current mode" },
+        { value: "sideborders", label: "sideborders", description: "Side border columns: on|off|toggle" },
       ];
       const filtered = items.filter((item) => item.value.startsWith(prefix.trim().toLowerCase()));
       return filtered.length > 0 ? filtered : null;
     },
     handler: async (args, ctx) => {
-      let requested = args.trim().toLowerCase();
+      const requested0 = args.trim().toLowerCase();
+      if (requested0 === "sideborders" || requested0.startsWith("sideborders ")) {
+        const flag = requested0.split(/\s+/)[1] ?? "toggle";
+        let on: boolean;
+        if (flag === "on") {
+          on = true;
+        } else if (flag === "off") {
+          on = false;
+        } else {
+          on = !sideBordersEnabled;
+        }
+        try {
+          applySideBorders(on);
+          ctx.ui.notify(`pi-pretty-tui side borders ${on ? "shown" : "hidden"}`, "info");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`Side borders changed for this session, but could not save settings: ${message}`, "warning");
+        }
+        return;
+      }
+      let requested = requested0;
 
       if (!requested) {
         if (!ctx.hasUI) {
@@ -702,8 +743,14 @@ export default function prettyTui(pi: ExtensionAPI) {
         const full = `Full — full tool details and output${renderMode === "full" ? " (current)" : ""}`;
         const compact = `Compact — concise tool summaries and nested calls${renderMode === "compact" ? " (current)" : ""}`;
         const clean = `Clean — group supported tools into Running/Done status${renderMode === "clean" ? " (current)" : ""}`;
-        const selected = await ctx.ui.select("pi-pretty-tui settings", [enabled, full, compact, clean]);
+        const borders = `Side borders — ${sideBordersEnabled ? "shown" : "hidden"} (editor, cards, code)`;
+        const selected = await ctx.ui.select("pi-pretty-tui settings", [enabled, full, compact, clean, borders]);
         if (!selected) return;
+        if (selected === borders) {
+          applySideBorders(!sideBordersEnabled);
+          ctx.ui.notify(`pi-pretty-tui side borders ${sideBordersEnabled ? "shown" : "hidden"}`, "info");
+          return;
+        }
         requested = selected === enabled
           ? config.enabled !== false ? "disable" : "enable"
           : selected === full
@@ -743,25 +790,48 @@ export default function prettyTui(pi: ExtensionAPI) {
         }
       }
       if (requested !== "full" && requested !== "compact" && requested !== "clean") {
-        ctx.ui.notify("Usage: /pretty-tui [enable|disable|full|compact|clean|status]", "error");
+        ctx.ui.notify("Usage: /pretty-tui [enable|disable|full|compact|clean|sideborders [on|off|toggle]|status]", "error");
         return;
       }
 
-      cleanCompactToolCallIds.clear();
-      revealedActivityGroups.clear();
-      collapsedActivityGroups.clear();
-      expandedThinkingMembers.clear();
-      renderMode = requested;
-      if (cleanRun.active && !cleanRun.settled) startWorkingElapsedTimer();
-      refreshLatestActivityWidget();
-      for (const component of toolComponents.values()) component.updateDisplay?.();
-      for (const component of thinkingComponents.values()) component.invalidate?.();
+      applyMode(requested);
       try {
         saveRenderMode(renderMode);
         ctx.ui.notify(`pi-pretty-tui mode set to: ${renderMode}`, "info");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`Mode changed for this session, but could not save settings: ${message}`, "warning");
+      }
+    },
+  });
+
+  setPrettyTuiBridge({
+    statusLine: () => `${config.enabled !== false ? "enabled" : "disabled"} · mode ${renderMode} · side borders ${sideBordersEnabled ? "shown" : "hidden"}`,
+    enabled: () => config.enabled !== false,
+    mode: () => renderMode,
+    sideBorders: () => sideBordersEnabled,
+    setMode: (mode) => {
+      applyMode(mode);
+      try {
+        saveRenderMode(mode);
+      } catch {
+        // Session-only change; the saved file keeps the previous mode.
+      }
+    },
+    setSideBorders: applySideBorders,
+    setEnabled: async (on, panelCtx) => {
+      try {
+        saveEnabled(on);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        panelCtx.ui.notify(`Could not save pi-pretty-tui setting: ${message}`, "error");
+        return;
+      }
+      panelCtx.ui.notify(`pi-pretty-tui ${on ? "enabled" : "disabled"}; reloading…`, "info");
+      try {
+        await panelCtx.reload?.();
+      } catch {
+        panelCtx.ui.notify("Setting saved; run /reload to apply it", "warning");
       }
     },
   });

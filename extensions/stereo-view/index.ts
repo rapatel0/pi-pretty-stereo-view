@@ -5,7 +5,7 @@ import { TranscriptLayout } from "./layout.js";
 import { TOOL_START_ENTRY, TranscriptTimestamps } from "./timestamps.js";
 import { defaults, loadPreferences, savePreferences, type Preferences } from "./preferences.js";
 import { beforeFirstFrame } from "./startup.js";
-import { markStereoAttached, markStereoDetaching } from "../integrated/bridges.js";
+import { markStereoAttached, markStereoDetaching, setStereoBridge } from "../integrated/bridges.js";
 
 /** Split native fullscreen history without changing message content or the input dock. */
 export default async function transcript(pi: ExtensionAPI): Promise<void> {
@@ -21,7 +21,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
     try { preferences = await loadPreferences(file); }
     catch (error) {
       preferences = { ...defaults };
-      preferenceWarning = "Could not read pi-stereo-view preferences; using defaults: " + String(error);
+      preferenceWarning = `Could not read pi-stereo-view preferences; using defaults: ${String(error)}`;
     }
   };
   await readPreferences();
@@ -88,7 +88,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   const persist = (ui: ExtensionContext["ui"]): void => {
     const snapshot = { ...preferences };
     writes = writes.then(() => savePreferences(file, snapshot)).catch(error => {
-      ui.notify("Could not save pi-stereo-view preferences: " + String(error), "error");
+      ui.notify(`Could not save pi-stereo-view preferences: ${String(error)}`, "error");
     });
   };
 
@@ -107,7 +107,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
           return;
         }
         void copyToClipboard(text).then(() => ui.notify("Block sent to clipboard.", "info"),
-          error => ui.notify("Could not copy block: " + String(error), "error"));
+          error => ui.notify(`Could not copy block: ${String(error)}`, "error"));
       }, () => pi.getAllTools());
     try { ensureLayout(); }
     catch (error) {
@@ -254,4 +254,14 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   pi.registerShortcut("ctrl+alt+right", { description: "Grow conversation along the split axis", handler: async () => {
     layout?.resize(1);
   } });
+
+  setStereoBridge({
+    statusLine: () => {
+      const size = preferences.layout === "rows" ? `height ${preferences.chatHeight ?? "auto"}` : `width ${preferences.chatWidth ?? "auto"}`;
+      return `${preferences.mode}, chat ${preferences.side}, ${preferences.layout}, ${size}, timestamps ${preferences.showTimestamps ? "on" : "off"}`;
+    },
+    openSettings: async (ui) => {
+      await openSettings(ui as Parameters<typeof openSettings>[0]);
+    },
+  });
 }

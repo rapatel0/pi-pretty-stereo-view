@@ -21,6 +21,17 @@ Remove the standalone packages from `~/.pi/agent/settings.json` (`packages.npm` 
 
 Requires Pi fullscreen TUI (`pi --tui-mode fullscreen`) for the stereo split and the sidebar; both degrade gracefully otherwise (sidebar shows a notification).
 
+## Settings panel
+
+`/ui-settings` opens one panel that drives all four components' live settings through native Pi dialogs — no separate command memorization:
+
+- **Sidebar** — on/off, width, and the narrow-screen auto-hide threshold
+- **Pretty TUI** — enable/disable, render mode (full/compact/clean), and side borders; enabling/disabling reloads the session to apply the render patches
+- **Stereo split** — opens the upstream settings sheet (timestamps, copy buttons, compact tools, chat size mode)
+- **Powerline** — on/off, placement (above/below the editor), and status-line preset
+
+Every change routes through each extension's own command/config path (via an in-package bridge), so the panel and the individual `/sidebar`, `/pretty-tui`, `/powerline`, `/stereo-view` commands stay perfectly in sync — there is no second source of truth. Each row shows the component's current state so you can see settings without opening a menu.
+
 ## Sidebar
 
 - `/sidebar` — toggle; also `on`, `off`, `status`
@@ -40,12 +51,12 @@ The sidebar mounts to the right of the stereo split automatically: it waits for 
   `{ "sidebar": { "enabled": true, "width": 30 } }`
 - `~/.pi/agent/pretty-tui.json` — unchanged from `pi-pretty-tui`, plus one new option:
   `{ "enabled": true, "mode": "compact", "sideBorders": false }`
-  `sideBorders: false` drops the vertical side columns of the editor frame, message bubbles, cards and code blocks while keeping the top/bottom rules. Defaults to `true` (upstream look).
+  `sideBorders: false` drops the vertical side columns of the editor frame, message bubbles, cards and code blocks while keeping the top/bottom rules. Defaults to `true` (upstream look). Toggle live with `/pretty-tui sideborders [on|off|toggle]` or the settings panel.
 - `~/.pi/agent/transcript.json` — stereo-view preferences (unchanged).
 
 ## Commands & keys
 
-Everything from the four upstream extensions is preserved (`/stereo-view`, `/powerline`, `/pretty-tui`, `/cd`, `/queue`, `/vibe`, `/bash-mode`, …). New in this bundle: `/sidebar`, `/sidebar width`, hidden `/sidebar-session switch <id>`, and `ctrl+alt+b`.
+Everything from the four upstream extensions is preserved (`/stereo-view`, `/powerline`, `/pretty-tui`, `/cd`, `/queue`, `/vibe`, `/bash-mode`, …). New in this bundle: `/ui-settings` (unified panel), `/sidebar`, `/sidebar width`, `/sidebar autohide`, `/pretty-tui sideborders`, hidden `/sidebar-session switch <id>`, and `ctrl+alt+b`.
 
 ## Releases
 

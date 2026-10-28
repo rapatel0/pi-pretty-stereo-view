@@ -19,13 +19,22 @@ New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) 
 ### pi-stereo-view (`extensions/stereo-view/`)
 - `index.ts`: calls `markStereoAttached()` / `markStereoDetaching()` around layout
   create/dispose so the bundled sidebar can mount around (and unmount before) the
-  split instead of racing it for the layout root. Behavior otherwise unchanged.
+  split instead of racing it for the layout root.
+- `index.ts`: registers a settings bridge (`setStereoBridge`) exposing a live
+  status line and the existing settings sheet for `/ui-settings`; setting
+  changes still flow through the upstream `openSettings` code path.
+  Behavior otherwise unchanged.
 
 ### pi-pretty-tui (`extensions/pretty-tui/`)
 - New `sideBorders` config option (default `true`) and `setSideBorders()` in
   `full-frame.ts`: when `false`, the editor frame, message/user/code frames and
   full-frame panels drop their vertical side columns while keeping top/bottom
   rules (`index.ts` gates the three `│` helpers on the flag).
+- New `/pretty-tui sideborders [on|off|toggle]` subcommand and a menu row, so
+  side borders no longer require hand-editing `pretty-tui.json`.
+- Registers a settings bridge (`setPrettyTuiBridge`) for `/ui-settings`: live
+  status, mode switching, side-border toggle, and enable/disable (with reload),
+  all reusing the command's own apply/save helpers.
 - Dead upstream helpers renamed with `_` prefix and `void`-referenced
   (`_renderCleanGroupSummary`, `_conciseActivityText`) to satisfy this repo's
   lint rules; no behavior change.
@@ -40,6 +49,10 @@ New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) 
 - `index.ts`, `working-vibes.ts`: type-only adaptations for the pi-coding-agent
   1.4.0 typings (`TranscriptContext` brand cast in `working-vibes.ts`,
   `SAFETY:`-annotated casts) plus lint-driven cleanups. No behavior change.
+- `index.ts`: the `/powerline` command handler was extracted verbatim into a
+  named `powerlineCommandHandler()` and re-registered unchanged; a settings
+  bridge (`setPowerlineBridge`) exposes it to `/ui-settings` (toggle,
+  placement, preset) so the panel drives the real command, not a copy.
 
 ### Editor frame composition (bug fix in this bundle)
 An empty/complete prompt frame showed a plain top rule with rounded bottom
