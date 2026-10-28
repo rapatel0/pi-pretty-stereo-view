@@ -47,6 +47,12 @@ The sidebar mounts to the right of the stereo split automatically: it waits for 
 
 Everything from the four upstream extensions is preserved (`/stereo-view`, `/powerline`, `/pretty-tui`, `/cd`, `/queue`, `/vibe`, `/bash-mode`, …). New in this bundle: `/sidebar`, `/sidebar width`, hidden `/sidebar-session switch <id>`, and `ctrl+alt+b`.
 
+## Releases
+
+Versions follow [VERSIONING.md](VERSIONING.md) (SemVer, annotated `vX.Y.Z` tags,
+GitHub releases). `scripts/release.sh patch|minor|major` runs the checks, tags,
+pushes, and opens the release. Pin installs to a tag.
+
 ## Development
 
 - `npm run typecheck` — `tsc --noEmit` over the whole package (0 errors)
