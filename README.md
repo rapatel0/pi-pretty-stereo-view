@@ -25,8 +25,11 @@ Requires Pi fullscreen TUI (`pi --tui-mode fullscreen`) for the stereo split and
 
 - `/sidebar` — toggle; also `on`, `off`, `status`
 - `/sidebar width <columns>` — fixed width (clamped 24…48); `width default` restores 20% of terminal width
+- `/sidebar autohide [columns|off|default]` — narrow-terminal threshold
+- `/sidebar status` — shows on/off plus whether it's currently hidden by width
 - `ctrl+alt+b` — toggle
 - Drag the sidebar's left divider to resize; width persists
+- Auto-hides on narrow terminals (phones): below 100 columns the sidebar hides itself and reappears automatically when the terminal is widened; tune with `/sidebar autohide <columns>`, `off`, or `default`
 - Contents: session switcher (relative times, context %, rename/delete), context usage estimate, live activity, per-tool call counts
 
 The sidebar mounts to the right of the stereo split automatically: it waits for the stereo layout to attach and is torn down before stereo restores the native layout, so the two never fight over the layout root.
@@ -47,4 +50,4 @@ Everything from the four upstream extensions is preserved (`/stereo-view`, `/pow
 ## Development
 
 - `npm run typecheck` — `tsc --noEmit` over the whole package (0 errors)
-- `node test/load-smoke.mjs` — jiti import + factory smoke with a mock Pi API
+- `npm test` — factory smoke (mock Pi API), editor-frame probe, config round-trip

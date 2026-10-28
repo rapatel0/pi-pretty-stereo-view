@@ -1,0 +1,17 @@
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createJiti } from "jiti";
+const dir = mkdtempSync(join(tmpdir(), "ppsv-cfg-"));
+process.env.PI_CODING_AGENT_DIR = dir;
+const jiti = createJiti(import.meta.url, { interopDefault: true });
+const cfg = await jiti.import("../extensions/integrated/config.ts");
+const a = cfg.loadSettings();
+console.assert(a.sidebarAutoHideBelow === 100, "default autohide", a);
+cfg.saveSettings({ sidebarEnabled: true, sidebarWidth: 30, sidebarAutoHideBelow: 0 });
+const b = cfg.loadSettings();
+console.assert(b.sidebarAutoHideBelow === 0 && b.sidebarWidth === 30, "roundtrip off", b);
+writeFileSync(join(dir, "pi-pretty-stereo-view.json"), JSON.stringify({ sidebar: { enabled: false, autoHideBelowColumns: 140 } }));
+const c = cfg.loadSettings();
+console.assert(c.sidebarEnabled === false && c.sidebarAutoHideBelow === 140, "file parse", c);
+console.log("CFG PASS");

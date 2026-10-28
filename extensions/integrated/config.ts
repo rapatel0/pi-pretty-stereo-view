@@ -6,13 +6,19 @@ export type IntegratedSettings = {
   sidebarEnabled: boolean;
   /** Sidebar width in columns; undefined lets the sidebar pick 20% of the terminal. */
   sidebarWidth: number | undefined;
+  /** Hide the sidebar on terminals narrower than this (0 disables auto-hide). */
+  sidebarAutoHideBelow: number;
 };
 
-export const DEFAULT_SETTINGS: IntegratedSettings = { sidebarEnabled: true, sidebarWidth: undefined };
+export const DEFAULT_SETTINGS: IntegratedSettings = {
+  sidebarEnabled: true,
+  sidebarWidth: undefined,
+  sidebarAutoHideBelow: 100,
+};
 
 const configFile = (): string => join(getAgentDir(), "pi-pretty-stereo-view.json");
 
-type FileShape = { sidebar?: { enabled?: unknown; width?: unknown } };
+type FileShape = { sidebar?: { enabled?: unknown; width?: unknown; autoHideBelowColumns?: unknown } };
 
 export function loadSettings(): IntegratedSettings {
   try {
@@ -22,9 +28,13 @@ export function loadSettings(): IntegratedSettings {
     const width = typeof sidebar.width === "number" && Number.isFinite(sidebar.width)
       ? Math.round(sidebar.width)
       : undefined;
+    const autoHideBelow = typeof sidebar.autoHideBelowColumns === "number" && Number.isFinite(sidebar.autoHideBelowColumns)
+      ? Math.max(0, Math.min(200, Math.round(sidebar.autoHideBelowColumns)))
+      : DEFAULT_SETTINGS.sidebarAutoHideBelow;
     return {
       sidebarEnabled: sidebar.enabled !== false,
       sidebarWidth: width,
+      sidebarAutoHideBelow: autoHideBelow,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -44,6 +54,7 @@ export function saveSettings(settings: IntegratedSettings): void {
     sidebar: {
       ...existing.sidebar,
       enabled: settings.sidebarEnabled,
+      autoHideBelowColumns: settings.sidebarAutoHideBelow,
       ...(settings.sidebarWidth === undefined ? {} : { width: settings.sidebarWidth }),
     },
   };

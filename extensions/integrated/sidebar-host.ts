@@ -8,7 +8,7 @@ import { deleteSessionFile } from "../ui/session/mutations.js";
 import { installContextEstimates } from "../ui/ctx/data.js";
 import { createActivityTracker, createStreamingTokenSampler, type ActivityTracker } from "../ui/ctx/activity.js";
 import { createToolUsageTracker, type ToolUsageTracker } from "../ui/tool-view/usage.js";
-import { loadSettings, saveSettings } from "./config.js";
+import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./config.js";
 import { isStereoAttached, onStereoAttached, onStereoDetaching } from "./bridges.js";
 
 type UsageLike = { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown; output?: unknown };
@@ -21,6 +21,7 @@ export function installSidebarHost(pi: ExtensionAPI): void {
   const settings = loadSettings();
   let enabled = settings.sidebarEnabled;
   let width = settings.sidebarWidth;
+  let autoHideBelow = settings.sidebarAutoHideBelow;
 
   let controller: SidebarController | undefined;
   let lastCtx: ExtensionContext | undefined;
@@ -29,14 +30,25 @@ export function installSidebarHost(pi: ExtensionAPI): void {
   let pendingAttachSubscription: (() => void) | undefined;
   let switchRequested = false;
   let fullscreenWarningShown = false;
+  let reinstallRef: (() => void) | undefined;
+  let evaluateWidthRef: ((columns: number) => void) | undefined;
+  let hiddenByWidth = false;
 
   const persist = (): void => {
     try {
-      saveSettings({ sidebarEnabled: enabled, sidebarWidth: width });
+      saveSettings({ sidebarEnabled: enabled, sidebarWidth: width, sidebarAutoHideBelow: autoHideBelow });
     } catch {
       // Preferences are best-effort; the sidebar keeps working unsaved.
     }
   };
+
+  const terminalColumns = (tui: unknown): number => {
+    const columns = (tui as { terminal?: { columns?: unknown } } | undefined)?.terminal?.columns;
+    return typeof columns === "number" && Number.isFinite(columns) && columns > 0
+      ? columns
+      : Number.MAX_SAFE_INTEGER;
+  };
+  const wideEnough = (columns: number): boolean => autoHideBelow <= 0 || columns >= autoHideBelow;
 
   const refresh = (): void => controller?.refresh();
   const refreshSessions = (): void => {
@@ -168,9 +180,7 @@ export function installSidebarHost(pi: ExtensionAPI): void {
   };
 
   // --- Mount / dispose ------------------------------------------------------
-  const disposeSidebar = (): void => {
-    pendingAttachSubscription?.();
-    pendingAttachSubscription = undefined;
+  const teardownController = (): void => {
     if (!controller) return;
     const liveWidth = controller.getWidth();
     if (liveWidth > 0) width = liveWidth;
@@ -178,59 +188,105 @@ export function installSidebarHost(pi: ExtensionAPI): void {
     controller = undefined;
   };
 
+  const disposeSidebar = (): void => {
+    pendingAttachSubscription?.();
+    pendingAttachSubscription = undefined;
+    reinstallRef = undefined;
+    evaluateWidthRef = undefined;
+    hiddenByWidth = false;
+    teardownController();
+  };
+
   const mountSidebar = async (ctx: ExtensionContext): Promise<void> => {
-    if (controller || !enabled || ctx.mode !== "tui") return;
+    if (controller || reinstallRef || !enabled || ctx.mode !== "tui") return;
     let finish: () => void = () => {};
     await ctx.ui.custom<void>((tui, theme, _keys, done) => {
       finish = done;
-      const panels = createDefaultSidebarPanels({
-        getContextUsage: () => ctx.getContextUsage(),
-        getContextEstimate: () => contextEstimates.getSnapshot(),
-        getContextDelta: () => contextEstimates.getDelta(),
-        getActivity: () => activity?.getSnapshot(),
-        getCacheHitRate: cacheHitRate,
-        getModel: () => ctx.model?.id ?? "no-model",
-        getThinkingLevel: () => pi.getThinkingLevel(),
-        getToolViewMode: () => undefined,
-        getToolUsage: () => toolUsage?.getSnapshot(),
-        onSelectToolViewMode: () => {
-          ctx.ui.notify("Tool view modes come from pi-ui-extension's tool controller, not this bundle", "info");
-        },
-        loadSessions: () => loadRows(ctx),
-        onSelectSession: (session) => switchToSession(ctx, session),
-        onRenameSession: (session) => void renameSession(ctx, session),
-        onDeleteSession: (session) => void deleteSession(ctx, session),
-        onDeleteOthers: () => {
-          ctx.ui.notify("Bulk session cleanup is not part of this bundle", "info");
-        },
-        onOpenResources: () => {
-          ctx.ui.notify("Resource browsing is not part of this bundle", "info");
-        },
-      });
-      const next = installSidebar(tui, theme, panels, {
-        ...(width === undefined ? {} : { initialWidth: width }),
-        onWidthChange: (liveWidth) => {
-          width = liveWidth;
-          persist();
-        },
-      });
-      if (next.mounted) {
-        controller = next;
-        fullscreenWarningShown = false;
-      } else if (!fullscreenWarningShown) {
-        fullscreenWarningShown = true;
-        ctx.ui.notify("Sidebar needs Pi fullscreen mode (set it in /settings or start with --tui-mode fullscreen)", "warning");
-      }
+      const install = (): void => {
+        if (controller) return;
+        const panels = createDefaultSidebarPanels({
+          getContextUsage: () => ctx.getContextUsage(),
+          getContextEstimate: () => contextEstimates.getSnapshot(),
+          getContextDelta: () => contextEstimates.getDelta(),
+          getActivity: () => activity?.getSnapshot(),
+          getCacheHitRate: cacheHitRate,
+          getModel: () => ctx.model?.id ?? "no-model",
+          getThinkingLevel: () => pi.getThinkingLevel(),
+          getToolViewMode: () => undefined,
+          getToolUsage: () => toolUsage?.getSnapshot(),
+          onSelectToolViewMode: () => {
+            ctx.ui.notify("Tool view modes come from pi-ui-extension's tool controller, not this bundle", "info");
+          },
+          loadSessions: () => loadRows(ctx),
+          onSelectSession: (session) => switchToSession(ctx, session),
+          onRenameSession: (session) => void renameSession(ctx, session),
+          onDeleteSession: (session) => void deleteSession(ctx, session),
+          onDeleteOthers: () => {
+            ctx.ui.notify("Bulk session cleanup is not part of this bundle", "info");
+          },
+          onOpenResources: () => {
+            ctx.ui.notify("Resource browsing is not part of this bundle", "info");
+          },
+        });
+        const next = installSidebar(tui, theme, panels, {
+          ...(width === undefined ? {} : { initialWidth: width }),
+          onWidthChange: (liveWidth) => {
+            width = liveWidth;
+            persist();
+          },
+        });
+        if (next.mounted) {
+          controller = next;
+          hiddenByWidth = false;
+          fullscreenWarningShown = false;
+        } else {
+          next.dispose();
+          if (!fullscreenWarningShown) {
+            fullscreenWarningShown = true;
+            ctx.ui.notify("Sidebar needs Pi fullscreen mode (set it in /settings or start with --tui-mode fullscreen)", "warning");
+          }
+        }
+      };
+      // The invisible overlay's visible() callback re-runs on terminal resize,
+      // which is the signal for auto-hiding on narrow screens (phones) and
+      // restoring the sidebar when the terminal widens again.
+      const evaluate = (columns: number): void => {
+        if (!enabled) return;
+        if (wideEnough(columns) && !controller) {
+          queueMicrotask(() => {
+            if (enabled && !controller && wideEnough(terminalColumns(tui))) {
+              install();
+              hiddenByWidth = false;
+            }
+          });
+        } else if (!wideEnough(columns) && controller) {
+          queueMicrotask(() => {
+            if (controller && !wideEnough(terminalColumns(tui))) {
+              teardownController();
+              hiddenByWidth = true;
+            }
+          });
+        }
+      };
+      reinstallRef = () => evaluate(terminalColumns(tui));
+      evaluateWidthRef = evaluate;
+      evaluate(terminalColumns(tui));
       return new Text("", 0, 0);
     }, {
       overlay: true,
-      overlayOptions: { visible: () => false, nonCapturing: true },
+      overlayOptions: {
+        visible: (columns: number) => {
+          evaluateWidthRef?.(columns);
+          return false;
+        },
+        nonCapturing: true,
+      },
       onHandle: () => finish(),
     });
   };
 
   const scheduleMount = (ctx: ExtensionContext): void => {
-    if (!enabled || controller) return;
+    if (!enabled || controller || reinstallRef) return;
     if (isStereoAttached()) {
       void mountSidebar(ctx);
       return;
@@ -249,8 +305,14 @@ export function installSidebarHost(pi: ExtensionAPI): void {
     if (enabled === next) return;
     enabled = next;
     persist();
-    if (!enabled) disposeSidebar();
-    else if (lastCtx) void mountSidebar(lastCtx);
+    if (!enabled) {
+      hiddenByWidth = false;
+      teardownController();
+    } else if (reinstallRef) {
+      reinstallRef();
+    } else if (lastCtx) {
+      void mountSidebar(lastCtx);
+    }
   };
 
   onStereoDetaching(() => disposeSidebar());
@@ -375,12 +437,40 @@ export function installSidebarHost(pi: ExtensionAPI): void {
       else if (verb === "width" && /^\d+$/.test(amount ?? "")) {
         width = Number(amount);
         persist();
-        disposeSidebar();
-        if (lastCtx) void mountSidebar(lastCtx);
+        teardownController();
+        if (reinstallRef) reinstallRef();
+        else if (lastCtx) void mountSidebar(lastCtx);
+      } else if (verb === "autohide") {
+        if (amount === "off") autoHideBelow = 0;
+        else if (amount === "default" || amount === undefined) autoHideBelow = DEFAULT_SETTINGS.sidebarAutoHideBelow;
+        else if (/^\d+$/.test(amount)) autoHideBelow = Math.max(0, Math.min(200, Number(amount)));
+        else {
+          ctx.ui.notify("Usage: /sidebar autohide [columns|off|default]", "warning");
+          return;
+        }
+        persist();
+        ctx.ui.notify(
+          autoHideBelow === 0
+            ? "Sidebar auto-hide disabled"
+            : `Sidebar auto-hides below ${autoHideBelow} columns`,
+          "info",
+        );
+        if (reinstallRef) reinstallRef();
       } else if (verb === "status") {
-        ctx.ui.notify(`Sidebar ${enabled ? "on" : "off"}${width === undefined ? " (auto width)" : ` at ${width} columns`}`, "info");
+        const state = !enabled
+          ? "off"
+          : controller
+            ? "on"
+            : hiddenByWidth
+              ? `on but hidden — terminal is narrower than ${autoHideBelow} columns`
+              : "on (waiting for the split layout)";
+        ctx.ui.notify(
+          `Sidebar ${state}${width === undefined ? " (auto width)" : ` at ${width} columns`}; auto-hide ${
+            autoHideBelow === 0 ? "disabled" : `below ${autoHideBelow} columns`}`,
+          "info",
+        );
       } else {
-        ctx.ui.notify("Usage: /sidebar [on|off|toggle|width <columns>|status]", "warning");
+        ctx.ui.notify("Usage: /sidebar [on|off|toggle|width <columns>|autohide [n|off|default]|status]", "warning");
       }
     },
   });
