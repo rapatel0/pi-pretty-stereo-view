@@ -1,6 +1,6 @@
 {
   "name": "pi-pretty-stereo-view",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Integrated Pi UI: pretty TUI rendering, stereo split history, powerline status bar, and a toggleable sidebar — one package.",
   "type": "module",
   "license": "MIT",
