@@ -305,6 +305,9 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
     pendingAttachSubscription?.();
     const subscribe = onStereoAttached(() => {
       pendingAttachSubscription = undefined;
+      // A TUI-mode rebuild re-attaches stereo on a fresh TUI while a stale
+      // sidebar mount may still point at the dead one; drop it first.
+      if (reinstallRef || controller) disposeSidebar();
       void mountSidebar(lastCtx ?? ctx);
     });
     pendingAttachSubscription = subscribe;

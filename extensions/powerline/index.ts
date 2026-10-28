@@ -74,7 +74,7 @@ import type { PowerlineQueueItem, QueueContext, QueueIntent, QueueSummary, Queue
 
 // ESC is a control character matched on purpose; built dynamically so the
 // pattern text contains no literal control character for regex-lint rules.
-const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
+const ANSI_ESCAPE_CHAR = "\x1B";
 const ANSI_SGR_PATTERN = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
 const STASH_HISTORY_CSI_U_PATTERN = new RegExp(`^${ANSI_ESCAPE_CHAR}\\[104(?::\\d*)?(?::\\d*)?;7(?::\\d+)?u$`);
 

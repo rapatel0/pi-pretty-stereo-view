@@ -10,6 +10,7 @@ import {
 import { createSidebarScrollView } from "./layout.ts";
 import { createSidebarRenderCache, SidebarLayoutRoot } from "./render-cache.ts";
 import { installMouseResize, SidebarDivider } from "./resize.ts";
+import { markForeignLayoutRoot } from "../../integrated/bridges.js";
 import type {
   SidebarPanelDefinition,
   SidebarPanelInstance,
@@ -199,6 +200,7 @@ export function installSidebar(
   };
   let uninstallMouseResize: () => void = () => {};
   try {
+    markForeignLayoutRoot(splitRoot);
     layoutTui.setLayoutRoot(splitRoot);
     // Resize uses Pi's internal Stack.entries. If unavailable, retain the
     // sidebar with its initial width instead of mutating an unknown API.

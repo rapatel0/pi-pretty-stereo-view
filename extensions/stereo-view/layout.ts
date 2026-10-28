@@ -8,6 +8,7 @@ import { NativeDocument, type Pane } from "./native.js";
 import { NativeContentIndex } from "./content.js";
 import type { Preferences } from "./preferences.js";
 import type { TranscriptTimestamps } from "./timestamps.js";
+import { isForeignLayoutRoot } from "../integrated/bridges.js";
 import { PANEL_SEARCH_ROWS, PanelSearch, PanelSearchShortcut, type SearchHit } from "./search.js";
 
 type NativeTui = TUI & {
@@ -140,7 +141,7 @@ export class TranscriptLayout {
 
   private button(icon: () => string, action: () => void, enabled = (): boolean => true, background?: () => Color): Component {
     return new MouseRegion({
-      render: width => new Text(this.theme().style("[ " + icon() + " ]", {
+      render: width => new Text(this.theme().style(`[ ${icon()} ]`, {
         fg: enabled() ? "accent" : "dim", bg: background?.(),
       }), 0, 0).render(width),
       invalidate() {},
@@ -155,12 +156,19 @@ export class TranscriptLayout {
     });
   }
 
+  /** True while this layout owns the TUI's layout root. */
+  isMounted(): boolean {
+    return this.host !== undefined;
+  }
+
   /** Mount controls only on a compatible native fullscreen history tree. */
   attach(tui: TUI): void {
     if (!isViewportTUI(tui)) {
       this.dispose();
       return;
     }
+    // SAFETY: isViewportTUI above guarantees a viewport TUI; NativeTui
+    // describes the internal layoutRoot/focus fields this layout mounts on.
     const host = tui as unknown as NativeTui;
     if (typeof host.getFocusedComponent !== "function") {
       this.warn("pi-stereo-view split is unavailable: Pi's focus API is not supported.");
@@ -177,15 +185,25 @@ export class TranscriptLayout {
       return;
     }
     const root = host.layoutRoot;
+    // The bundled sidebar wraps the mounted split with its own layout root;
+    // leave everything mounted while that wrapper owns the root, instead of
+    // disposing the split and warning on the first message of the session.
+    if (isForeignLayoutRoot(root)) return;
     if (this.host) this.dispose();
     if (root && this.rejectedRoots.has(root)) return;
-    if (!root || root.constructor.name !== "VStack" || root.children.length !== 2) {
-      if (root) this.rejectedRoots.add(root);
+    // After pi rebuilds the TUI (a /settings TUI-mode switch), the root is
+    // undefined until the new viewport mounts. undefined cannot latch into a
+    // WeakSet, so warning here would repeat on every keystroke.
+    if (!root) return;
+    if (root.constructor.name !== "VStack" || root.children.length !== 2) {
+      this.rejectedRoots.add(root);
       this.warn("pi-stereo-view split is unavailable: Pi's fullscreen layout is not supported.");
       return;
     }
     const [transcript, dock] = root.children;
     const scroll = transcript as ScrollView;
+    // SAFETY: pi nests the transcript ScrollView in an owner container with
+    // child/children aliases; the exact shape is verified immediately below.
     const owner = scroll as unknown as { child?: Component; children: Component[] };
     const document = owner.children?.[0] as Container;
     if (transcript.constructor.name !== "ScrollView" || dock.constructor.name !== "VStack" ||
@@ -234,9 +252,14 @@ export class TranscriptLayout {
       });
       this.automaticHeight = Math.max(MIN_ROWS, Math.floor(historyHeight / 2));
       const searchRows = this.search ? PANEL_SEARCH_ROWS : 0;
-      const fits = this.preferences.zoom ? width >= MIN_CHAT && historyHeight >= MIN_ROWS + searchRows :
-        this.preferences.layout === "columns" ? width >= MIN_CHAT + MIN_ACTIVITY + 1 && historyHeight >= MIN_ROWS + searchRows :
-          width >= MIN_CHAT && historyHeight >= MIN_ROWS * 2 + 1 + searchRows;
+      let fits: boolean;
+      if (this.preferences.zoom) {
+        fits = width >= MIN_CHAT && historyHeight >= MIN_ROWS + searchRows;
+      } else if (this.preferences.layout === "columns") {
+        fits = width >= MIN_CHAT + MIN_ACTIVITY + 1 && historyHeight >= MIN_ROWS + searchRows;
+      } else {
+        fits = width >= MIN_CHAT && historyHeight >= MIN_ROWS * 2 + 1 + searchRows;
+      }
       this.fallback = this.preferences.mode === "split" && !fits;
       if (this.search && (this.fallback || this.failed || this.preferences.mode !== "split" ||
         (this.preferences.zoom && this.preferences.zoom !== this.search.pane))) this.closeSearch(false);
@@ -261,7 +284,7 @@ export class TranscriptLayout {
         this.failed = true;
         this.searchShortcut.dispose();
         this.disposeDocuments?.();
-        queueMicrotask(() => this.warn("pi-stereo-view split disabled: " + (error as Error).message));
+        queueMicrotask(() => this.warn(`pi-stereo-view split disabled: ${(error as Error).message}`));
         return false;
       }
     };
@@ -296,7 +319,7 @@ export class TranscriptLayout {
       };
       const label = new HStack([
         { component: new MouseRegion({
-          render: width => new Text(this.theme().style(truncateToWidth(" " + (this.searchPane() === target ? "● " : " ") + title, width, "").padEnd(width), {
+          render: width => new Text(this.theme().style(truncateToWidth(` ${this.searchPane() === target ? "● " : " "}${title}`, width, "").padEnd(width), {
             fg: this.searchPane() === target ? "accent" : palette().text, bg: palette().fill,
           }), 0, 0).render(width),
           invalidate() {},
@@ -346,9 +369,12 @@ export class TranscriptLayout {
       const position = axis === "columns" ? event.screenX : event.screenY;
       if (event.type === "press") {
         const before = this.preferences.side === "left";
-        const size = axis === "columns" ?
-          (before ? position : host.terminal.columns - position - 1) :
-          this.currentHeight();
+        let size: number;
+        if (axis === "columns") {
+          size = before ? position : host.terminal.columns - position - 1;
+        } else {
+          size = this.currentHeight();
+        }
         this.drag = { position, size };
         return { capture: true };
       }
@@ -470,7 +496,7 @@ export class TranscriptLayout {
         return;
       }
       void this.jumpToSearch(pane, hit, query, () => this.search?.bar === bar && this.searchVersion === version)
-        .catch(error => this.warn("Could not navigate search: " + String(error)));
+        .catch(error => this.warn(`Could not navigate search: ${String(error)}`));
     }, () => this.closeSearch());
     this.search = { pane, bar, document, view, top: view.scrollTop, following: view.isFollowingEnd,
       focus: host.getFocusedComponent() };

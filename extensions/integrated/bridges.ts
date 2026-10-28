@@ -78,3 +78,15 @@ export type PowerlineBridge = {
 let powerlineBridge: PowerlineBridge | undefined;
 export const setPowerlineBridge = (bridge: PowerlineBridge): void => { powerlineBridge = bridge; };
 export const getPowerlineBridge = (): PowerlineBridge | undefined => powerlineBridge;
+
+/**
+ * Layout-root registry: the sidebar legitimately wraps the layout root that
+ * the stereo split already mounted. Stereo re-attaches on every message
+ * update and terminal input; without recognizing that wrapper it disposes
+ * the mounted split and warns "fullscreen layout is not supported" on the
+ * first message of every session where both are active.
+ */
+const foreignLayoutRoots = new WeakSet<object>();
+export const markForeignLayoutRoot = (root: object): void => { foreignLayoutRoots.add(root); };
+export const isForeignLayoutRoot = (root: unknown): boolean =>
+  typeof root === "object" && root !== null && foreignLayoutRoots.has(root);

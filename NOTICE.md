@@ -54,6 +54,34 @@ New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) 
   bridge (`setPowerlineBridge`) exposes it to `/ui-settings` (toggle,
   placement, preset) so the panel drives the real command, not a copy.
 
+### Stereo/sidebar layout conflicts (bug fixes in this bundle)
+With both the split and the sidebar active, the first message of every
+session disposed the split and warned
+`pi-stereo-view split is unavailable: Pi's fullscreen layout is not
+supported.`; and changing the TUI mode in /settings made that warning repeat
+on every keystroke while both layouts stayed dead until a new session.
+- `extensions/integrated/bridges.ts`: foreign-layout-root registry
+  (`markForeignLayoutRoot` / `isForeignLayoutRoot`).
+- `extensions/ui/sidebar/index.ts`: marks its installed `SidebarLayoutRoot`
+  wrapper so the stereo layout recognizes it as part of this bundle.
+- `extensions/stereo-view/layout.ts`: `attach()` leaves the mounted split
+  alone while the bundle's sidebar wrapper owns the root; a null `layoutRoot`
+  (pi mid-rebuild) returns without warning (undefined never latches, so it
+  repeated per input); added a public `isMounted()` accessor.
+- `extensions/stereo-view/index.ts`: `ensureLayout()` detects that pi's
+  `switchTuiMode` killed the captured TUI (it stops the old UI and nulls its
+  layout root), re-acquires the live TUI through a throwaway invisible
+  overlay, re-attaches, and signals the sidebar through the bridge only on
+  real success.
+- `extensions/integrated/sidebar-host.ts`: when the attach bridge fires while
+  a stale mount exists, the old sidebar is disposed and remounted on the new
+  TUI.
+- Style-only edits required by this repo's lint gate on the touched files
+  (template literals, unnested ternaries, `SAFETY:` comments on internal-shape
+  casts); no behavior changes.
+- Verified by `test/sidebar-wrap-probe.mjs` (wrapper silent, unknown root
+  still warns, null root silent).
+
 ### Editor frame composition (bug fix in this bundle)
 An empty/complete prompt frame showed a plain top rule with rounded bottom
 corners and misplaced lines while the autocomplete menu was open: pi-powerline

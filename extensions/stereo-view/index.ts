@@ -1,6 +1,6 @@
 import path from "node:path";
 import { copyToClipboard, getAgentDir, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Container, isKeyRelease, matchesKey, SettingsList, Text, type TUI } from "@earendil-works/pi-tui";
+import { Box, Container, isKeyRelease, isViewportTUI, matchesKey, SettingsList, Text, type TUI } from "@earendil-works/pi-tui";
 import { TranscriptLayout } from "./layout.js";
 import { TOOL_START_ENTRY, TranscriptTimestamps } from "./timestamps.js";
 import { defaults, loadPreferences, savePreferences, type Preferences } from "./preferences.js";
@@ -82,7 +82,34 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
     await writes;
   };
 
+  let lastSessionCtx: ExtensionContext | undefined;
+  let rebinding = false;
   const ensureLayout = (): void => {
+    // pi's switchTuiMode stops the old TUI and nulls its layout root before
+    // mounting a fresh one, so the host captured here goes stale whenever the
+    // user changes TUI mode in /settings. Detect the dead viewport host and
+    // re-acquire the live TUI through a throwaway invisible overlay; the
+    // attach bridge lets the sidebar remount onto the new TUI as well.
+    // SAFETY: isViewportTUI guards the cast; fullscreen TUIs expose layoutRoot.
+    if (host && isViewportTUI(host) && (host as { layoutRoot?: unknown }).layoutRoot === undefined &&
+      lastSessionCtx && !rebinding) {
+      const ctx = lastSessionCtx;
+      rebinding = true;
+      void ctx.ui.custom<void>((tui, _theme, _keys, done) => {
+        host = tui;
+        layout?.attach(tui);
+        // Only a successful re-mount may signal the sidebar; a pending
+        // rebuild must leave the previous sidebar state untouched.
+        if (layout?.isMounted()) markStereoAttached();
+        done();
+        return new Text("", 0, 0);
+      }, {
+        overlay: true,
+        overlayOptions: { visible: () => false, nonCapturing: true },
+        onHandle: () => {},
+      }).finally(() => { rebinding = false; });
+      return;
+    }
     if (host) layout?.attach(host);
   };
   const persist = (ui: ExtensionContext["ui"]): void => {
@@ -131,6 +158,8 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   pi.on("session_start", async (event, ctx) => {
     releaseStartup();
     if (ctx.mode !== "tui") return;
+    lastSessionCtx = ctx;
+    rebinding = false;
     const early = event.reason === "startup" && earlySession === ctx.sessionManager.getSessionId() && layout !== undefined;
     earlySession = undefined;
     if (!early) {
@@ -192,6 +221,8 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
     closeSearch();
     unsubscribeInput?.();
     unsubscribeInput = undefined;
+    lastSessionCtx = undefined;
+    rebinding = false;
     markStereoDetaching();
     layout?.dispose();
     layout = undefined;
