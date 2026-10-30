@@ -1,13 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createJiti } from "jiti";
+import { agentEnv } from "./harness.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "ppsv-probe-"));
-process.env.PI_CODING_AGENT_DIR = dir;
-writeFileSync(join(dir, "pretty-tui.json"), JSON.stringify({ enabled: true, mode: "full", sideBorders: false }));
-
-const jiti = createJiti(import.meta.url, { interopDefault: true });
+const { jiti } = agentEnv(
+  { "pretty-tui.json": { enabled: true, mode: "full", sideBorders: false } },
+  "ppsv-probe-",
+);
 const ca = await import("@earendil-works/pi-coding-agent");
 const nativeRender = ca.CustomEditor.prototype.render;
 const prettyMod = await jiti.import("../extensions/pretty-tui/index.ts");

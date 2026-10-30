@@ -13,6 +13,8 @@ import { isStereoAttached, onStereoAttached, onStereoDetaching } from "./bridges
 
 type UsageLike = { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown; output?: unknown };
 
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 /**
  * Right-side sidebar (sessions, context, tool usage) from pi-ui-extension,
  * mounted over whatever layout the stereo split owns and fully toggleable.
@@ -161,7 +163,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
       }
       ctx.ui.notify("Session renamed", "info");
     } catch (error) {
-      ctx.ui.notify(`Failed to rename session: ${error instanceof Error ? error.message : String(error)}`, "error");
+      ctx.ui.notify(`Failed to rename session: ${errorMessage(error)}`, "error");
     }
   };
 
@@ -448,7 +450,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
         // A successful switch starts a new session, which clears the guard.
       } catch (error) {
         switchRequested = false;
-        ctx.ui.notify(`Failed to switch session: ${error instanceof Error ? error.message : String(error)}`, "error");
+        ctx.ui.notify(`Failed to switch session: ${errorMessage(error)}`, "error");
       }
     },
   });

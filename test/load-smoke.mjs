@@ -1,15 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { createJiti } from "jiti";
+import { agentEnv } from "./harness.mjs";
 
-const agentDir = mkdtempSync(join(tmpdir(), "ppsv-agent-"));
-process.env.PI_CODING_AGENT_DIR = agentDir;
-process.env.HOME = process.env.HOME || homedir();
-writeFileSync(join(agentDir, "pretty-tui.json"), JSON.stringify({ enabled: true, mode: "compact", sideBorders: false }));
-writeFileSync(join(agentDir, "transcript.json"), "{}");
-writeFileSync(join(agentDir, "pi-pretty-stereo-view.json"), JSON.stringify({ sidebar: { enabled: true, width: 30 } }));
+const { module: loadModule } = agentEnv({
+  "pretty-tui.json": { enabled: true, mode: "compact", sideBorders: false },
+  "transcript.json": "{}",
+  "pi-pretty-stereo-view.json": { sidebar: { enabled: true, width: 30 } },
+}, "ppsv-agent-");
 
 const registered = { events: [], commands: [], shortcuts: [], tools: [], other: [] };
 const noop = () => () => {};
@@ -40,13 +35,11 @@ const pi = new Proxy(known, {
   },
 });
 
-const jiti = createJiti(import.meta.url, { interopDefault: true });
-const root = new URL("..", import.meta.url).pathname;
 let failures = 0;
 for (const entry of ["extensions/stereo-view/index.ts", "extensions/powerline/index.ts",
   "extensions/pretty-tui/index.ts", "extensions/integrated/sidebar-host.ts", "extensions/index.ts"]) {
   try {
-    const mod = await jiti.import(pathToFileURL(join(root, entry)).href);
+    const mod = await loadModule(entry);
     console.log(`IMPORT OK   ${entry} (default=${typeof mod.default})`);
   } catch (error) {
     failures++;
@@ -54,7 +47,7 @@ for (const entry of ["extensions/stereo-view/index.ts", "extensions/powerline/in
   }
 }
 try {
-  const mod = await jiti.import(pathToFileURL(join(root, "extensions/index.ts")).href);
+  const mod = await loadModule("extensions/index.ts");
   await mod.default(pi);
   console.log(`FACTORIES OK events=${registered.events.length} commands=[${[...new Set(registered.commands)].join(",")}] shortcuts=${registered.shortcuts.length} tools=${registered.tools.length}`);
   const commands = new Set(registered.commands);
@@ -66,7 +59,7 @@ try {
   }
   // The unified panel drives each component through its bridge; a missing
   // bridge means /ui-settings would show dead sections.
-  const bridges = await jiti.import(pathToFileURL(join(root, "extensions/integrated/bridges.js")).href);
+  const bridges = await loadModule("extensions/integrated/bridges.js");
   for (const [name, getter] of [["pretty-tui", "getPrettyTuiBridge"], ["stereo", "getStereoBridge"], ["powerline", "getPowerlineBridge"]]) {
     const bridge = bridges[getter]?.();
     if (bridge && typeof bridge.statusLine === "function") {

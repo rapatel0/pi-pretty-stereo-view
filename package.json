@@ -19,19 +19,20 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node test/load-smoke.mjs && node test/editor-render-probe.mjs && node test/sidebar-wrap-probe.mjs && node test/config-check.mjs"
+    "test": "node test/load-smoke.mjs && node test/editor-render-probe.mjs && node test/sidebar-wrap-probe.mjs && node test/reachability-probe.mjs && node test/config-check.mjs"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.81.0",
     "@earendil-works/pi-coding-agent": ">=1.4.0",
-    "@earendil-works/pi-tui": ">=1.4.0",
-    "@earendil-works/pi-ai": ">=0.81.0"
+    "@earendil-works/pi-tui": ">=1.4.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^1.4.0",
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^24.0.0",
-    "typescript": "5.9.3",
-    "@earendil-works/pi-ai": "^1.4.0"
+    "jiti": "^2.7.0",
+    "typescript": "5.9.3"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {

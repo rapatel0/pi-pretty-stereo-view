@@ -2,17 +2,9 @@
 // stereo split mounted. TranscriptLayout.attach() re-runs on every message
 // update; it must leave the mounted split alone while the sidebar's wrapper
 // owns the root (no dispose, no warning) and still warn for unknown roots.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createJiti } from "jiti";
+import { agentEnv } from "./harness.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "ppsv-wrap-"));
-process.env.PI_CODING_AGENT_DIR = dir;
-writeFileSync(join(dir, "transcript.json"), "{}");
-
-const jiti = createJiti(import.meta.url, { interopDefault: true });
-const url = (path) => new URL(path, import.meta.url).href;
+const { jiti, url } = agentEnv({ "transcript.json": "{}" }, "ppsv-wrap-");
 const bridges = await jiti.import(url("../extensions/integrated/bridges.ts"));
 const { TranscriptLayout } = await jiti.import(url("../extensions/stereo-view/layout.ts"));
 const { defaults } = await jiti.import(url("../extensions/stereo-view/preferences.ts"));
