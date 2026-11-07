@@ -117,3 +117,5 @@ the code, and the removal sites. Checks: `npx tsc --noEmit` and `npm test` after
 | Command | Removed code | Sites in `extensions/powerline/index.ts` | Verified |
 | --- | --- | --- | --- |
 | `/cd` | `extensions/powerline/cd-command.ts` (190 lines) | import line 43, `registerCdCommand(...)` call line 2525 | tsc exit 0, 5 probes pass, reach 78/78 |
+| `/reply` | `extensions/powerline/quote-reply.ts` | `PowerlineShortcuts.reply`, action union member, `DEFAULT_SHORTCUTS.reply`, `SHORTCUT_KEYS` entry, matcher branch, dispatcher branch, `registerCommand("reply")` | tsc exit 0, 5 probes pass, reach 77/77 |
+| startup welcome | `extensions/powerline/welcome.ts` (505 lines), `shouldShowStartupWelcome` in `lifecycle.ts` | `PowerlineConfig.welcome` field, default, normalizer, and `Pick` entry; import line; startup gate in `session_start`; five dismissal calls in `session_start`, `agent_start`, `tool_call`, `agent_end`, and editor input; `dismissWelcome`, `dismissWelcomeForInput`, `setupWelcomeHeader`, `setupWelcomeOverlay`, `beginWelcomeRequest`, `canShowWelcome`; four state vars | tsc exit 0, 5 probes pass, reach 76/76 |
