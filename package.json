@@ -7,12 +7,16 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
+    ],
+    "themes": [
+      "themes"
     ]
   },
   "files": [
+    "NOTICE.md",
     "extensions",
     "licenses",
-    "NOTICE.md"
+    "themes"
   ],
   "engines": {
     "node": ">=22.19.0"

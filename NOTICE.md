@@ -1,6 +1,8 @@
 # Notices and attribution
 
-This package vendors modified copies of four MIT-licensed Pi extensions.
+This package vendors modified copies of four MIT-licensed Pi extensions and
+the unmodified `pi-ayu-themes` colour themes (MIT, Marko Ranđelović, upstream
+`iodic/pi-ayu-themes`). Themes are copied verbatim; no local changes.
 Pristine upstream copies are kept under `reference/` for diffing (not shipped).
 License texts are copied under `licenses/` where the upstream tarball shipped one;
 `pi-powerline-footer` declares MIT in its package.json but ships no LICENSE file.
@@ -11,6 +13,7 @@ License texts are copied under `licenses/` where the upstream tarball shipped on
 | `extensions/powerline/` | `pi-powerline-footer` | 0.21.0 | MIT (declared in package.json; no file shipped) |
 | `extensions/pretty-tui/` | `pi-pretty-tui` | 0.3.0 | MIT (`licenses/pi-pretty-tui.LICENSE`) |
 | `extensions/ui/{sidebar,ctx,session,tool-view}/` | `pi-ui-extension` | 1.9.9 | MIT (`licenses/pi-ui-extension.LICENSE`) |
+| `themes/` | `pi-ayu-themes` | 1.0.0 | MIT (`licenses/pi-ayu-themes.LICENSE`) |
 
 New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) is MIT, (c) Ravi Enagonda.
 
