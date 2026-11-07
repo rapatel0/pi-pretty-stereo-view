@@ -3,7 +3,6 @@ import { normalizeCostCurrency } from "./currency-rates.ts";
 import { BUILTIN_STATUS_LINE_SEGMENT_IDS } from "./types.ts";
 import type { ColorValue, CustomItemPosition, CustomStatusItem, PowerlinePlacement, PresetDef, StatusLineLayout, StatusLinePreset, StatusLineSegmentId, StatusLineSegmentOptions, StatusLineSeparatorStyle } from "./types.ts";
 
-export type CompactPromptMode = "queue" | "native";
 export type SecondaryOverflow = "drop" | "wrap";
 export type WorkingIndicatorPlacement = "editor-border" | "above-powerline";
 
@@ -24,7 +23,6 @@ export interface PowerlineConfig {
   workingIndicatorPlacement: WorkingIndicatorPlacement;
   invalidWorkingIndicatorPlacement: string | null;
   stashSharpSShortcut: boolean;
-  queue: { compactPromptMode: CompactPromptMode };
   sendDelayMs: number;
   autoFollowUp: boolean;
 }
@@ -248,13 +246,6 @@ function normalizeLayout(
     : { layout: null, invalidLayoutSegments };
 }
 
-function normalizeQueueOptions(raw: unknown): PowerlineConfig["queue"] {
-  if (!isRecord(raw)) return { compactPromptMode: "queue" };
-  return {
-    compactPromptMode: raw.compactPromptMode === "native" ? "native" : "queue",
-  };
-}
-
 function normalizeSegmentOptions(raw: Record<string, unknown>): StatusLineSegmentOptions {
   const options: StatusLineSegmentOptions = {};
 
@@ -359,7 +350,6 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     workingIndicatorPlacement: "editor-border",
     invalidWorkingIndicatorPlacement: null,
     stashSharpSShortcut: false,
-    queue: { compactPromptMode: "queue" },
     sendDelayMs: 0,
     autoFollowUp: false,
   };
@@ -395,7 +385,6 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     workingIndicatorPlacement,
     invalidWorkingIndicatorPlacement,
     stashSharpSShortcut: value.stashSharpSShortcut === true,
-    queue: normalizeQueueOptions(value.queue),
     sendDelayMs: typeof value.sendDelayMs === "number" && Number.isFinite(value.sendDelayMs) && value.sendDelayMs > 0
       ? value.sendDelayMs
       : 0,

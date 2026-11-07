@@ -47,9 +47,7 @@ import {
   shortcutConflictKey,
   shortcutUsesSuper,
 } from "./shortcuts.ts";
-import { PowerlineQueueStore, currentQueueContext, formatQueueDeliveryText, parseCompactQueuedPrompt } from "./queue/store.ts";
 import { canWaitAsFollowUp } from "./auto-follow-up.ts";
-import type { PowerlineQueueItem, QueueContext, QueueIntent, QueueSummary, QueueTarget } from "./queue/types.ts";
 
 // ESC is a control character matched on purpose; built dynamically so the
 // pattern text contains no literal control character for regex-lint rules.
@@ -78,7 +76,6 @@ let config: PowerlineConfig = {
   workingIndicatorPlacement: "editor-border",
   invalidWorkingIndicatorPlacement: null,
   stashSharpSShortcut: false,
-  queue: { compactPromptMode: "queue" },
   sendDelayMs: 0,
   autoFollowUp: false,
 };
@@ -92,7 +89,6 @@ export interface PowerlineShortcuts {
   stashHistory: ShortcutBinding;
   copyEditor: ShortcutBinding;
   cutEditor: ShortcutBinding;
-  queueOpen: ShortcutBinding;
   editorStart: ShortcutBinding;
   editorEnd: ShortcutBinding;
 }
@@ -102,7 +98,6 @@ type PowerlineShortcutAction =
   | { kind: "stashHistory" }
   | { kind: "copyEditor" }
   | { kind: "cutEditor" }
-  | { kind: "queueOpen" }
   | { kind: "bashMode" };
 const STASH_HISTORY_LIMIT = 12;
 const PROJECT_PROMPT_HISTORY_LIMIT = 50;
@@ -114,7 +109,6 @@ const DEFAULT_SHORTCUTS: PowerlineShortcuts = {
   stashHistory: "ctrl+alt+h",
   copyEditor: "ctrl+alt+c",
   cutEditor: "ctrl+alt+x",
-  queueOpen: "ctrl+alt+q",
   editorStart: "super+shift+up",
   editorEnd: "super+shift+down",
 };
@@ -124,7 +118,7 @@ const DEFAULT_BASH_MODE_SETTINGS = {
   transcriptMaxLines: 2000,
   transcriptMaxBytes: 512 * 1024,
 } as const satisfies BashModeSettings;
-const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["stashHistory", "copyEditor", "cutEditor", "queueOpen", "editorStart", "editorEnd"];
+const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["stashHistory", "copyEditor", "cutEditor", "editorStart", "editorEnd"];
 const APP_RESERVED_SHORTCUTS = [
   "escape",
   "ctrl+c",
@@ -170,7 +164,6 @@ const STREAMING_LAYOUT_CACHE_TTL_MS = 1000;
 const STATUS_RENDER_DEBOUNCE_MS = 33;
 const CONTEXT_STATUS_RENDER_MS = 250;
 const EDITOR_STATUS_DEFER_MS = 150;
-const QUEUE_SUMMARY_CACHE_TTL_MS = 250;
 const PROMPT_HISTORY_TRACKED = Symbol.for("powerlinePromptHistoryTracked");
 const PROMPT_HISTORY_STATE_KEY = Symbol.for("powerlinePromptHistoryState");
 const ACTIVE_STASH_RELOAD_STATE_KEY = Symbol.for("pi-powerline-footer.active-stash-reload.v1");
@@ -1259,14 +1252,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   let bashTranscript = new BashTranscriptStore(bashModeSettings);
   let bashCompletionEngine = new BashCompletionEngine();
   let shellSession: ManagedShellSession | null = null;
-  const queueStore = new PowerlineQueueStore();
-  let queueSummaryCache: {
-    cwd: string;
-    sessionId?: string;
-    compacting: boolean;
-    expiresAt: number;
-    summary: QueueSummary;
-  } | null = null;
   let powerlineCompacting = false;
   let compactionGeneration = 0;
   let pendingSend: {
@@ -1276,9 +1261,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     timer: ReturnType<typeof setTimeout>;
     ticker: ReturnType<typeof setInterval>;
   } | null = null;
-  let postCompactionDelivery: { generation: number; context: QueueContext } | null = null;
-  let queueDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
-  const pendingQueueDeliveries = new Map<string, { text: string; timer: ReturnType<typeof setTimeout> }>();
 
   // Cache for the top and secondary powerline widgets.
   let lastLayoutWidth = 0;
@@ -1498,74 +1480,13 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     );
   }
 
-  function getQueueSessionId(ctx: any): string | undefined {
-    const sessionId = ctx.sessionManager?.getSessionId?.();
-    return typeof sessionId === "string" && sessionId.trim() ? sessionId : undefined;
-  }
 
-  function getQueueContext(ctx: any): QueueContext {
-    return currentQueueContext(ctx.cwd ?? process.cwd(), getQueueSessionId(ctx));
-  }
 
-  function getQueueSummary(ctx: any): QueueSummary {
-    const context = getQueueContext(ctx);
-    const now = Date.now();
-    if (
-      queueSummaryCache
-      && queueSummaryCache.cwd === context.cwd
-      && queueSummaryCache.sessionId === context.sessionId
-      && queueSummaryCache.compacting === powerlineCompacting
-      && now < queueSummaryCache.expiresAt
-    ) {
-      return queueSummaryCache.summary;
-    }
 
-    const summary = queueStore.summarize(context, powerlineCompacting);
-    queueSummaryCache = {
-      cwd: context.cwd,
-      ...(context.sessionId ? { sessionId: context.sessionId } : {}),
-      compacting: powerlineCompacting,
-      expiresAt: now + QUEUE_SUMMARY_CACHE_TTL_MS,
-      summary,
-    };
-    return summary;
-  }
 
-  function requestQueueRender(): void {
-    queueSummaryCache = null;
-    requestImmediateStatusRender({ deferDuringTyping: false });
-  }
 
-  function queueItemLabel(item: PowerlineQueueItem): string {
-    const status = item.status === "queued" ? item.intent : `${item.intent}/${item.status}`;
-    return `${item.id} ${status} ${buildStashPreview(item.text, 56)}`;
-  }
 
-  function queueItemDescription(item: PowerlineQueueItem): string {
-    if (item.target.kind === "global") return "global";
-    if (item.target.kind === "current-session") return "current session";
-    return item.target.alias ? `@${item.target.alias}` : item.target.cwd;
-  }
 
-  function captureQueueItem(ctx: any, text: string, intent: QueueIntent, target: QueueTarget): PowerlineQueueItem {
-    const item = queueStore.add({
-      text,
-      intent,
-      target,
-      source: getQueueContext(ctx),
-    });
-    requestQueueRender();
-    return item;
-  }
-
-  function capturePostCompactPrompt(ctx: any, text: string): PowerlineQueueItem | null {
-    const trimmed = text.trim();
-    if (!trimmed) return null;
-
-    const item = captureQueueItem(ctx, trimmed, "post-compact", { kind: "current-session" });
-    ctx.ui.notify(`Queued for after compaction (${item.id})`, "info");
-    return item;
-  }
 
   function takePendingSend(): NonNullable<typeof pendingSend> | null {
     const pending = pendingSend;
@@ -1580,12 +1501,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   function sendPendingNow(): void {
     const pending = takePendingSend();
     if (!pending) return;
-    // Mirror the editor's compaction capture: in queue mode a delayed prompt never lands in Pi's native compaction queue.
-    if (powerlineCompacting && config.queue.compactPromptMode === "queue" && currentCtx) {
-      currentEditor?.addToHistory?.(pending.text);
-      capturePostCompactPrompt(currentCtx, pending.text);
-      return;
-    }
     void pending.submit(pending.text);
   }
 
@@ -1618,231 +1533,23 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     tuiRef?.requestRender();
   }
 
-  function deliveryModeForItem(ctx: any, item: PowerlineQueueItem): "steer" | "followUp" | undefined {
-    const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
-    if (idle) return undefined;
-    return item.intent === "steer" ? "steer" : "followUp";
-  }
 
-  function clearPendingQueueDelivery(id: string): void {
-    const pending = pendingQueueDeliveries.get(id);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    pendingQueueDeliveries.delete(id);
-  }
 
-  function trackPendingQueueDelivery(item: PowerlineQueueItem, text: string): void {
-    clearPendingQueueDelivery(item.id);
-    const timer = setTimeout(() => {
-      pendingQueueDeliveries.delete(item.id);
-      const current = queueStore.get(item.id);
-      if (current?.status === "delivering") {
-        queueStore.update(item.id, { status: "queued", error: "Queued message did not start" });
-        requestQueueRender();
-      }
-    }, 60_000);
-    pendingQueueDeliveries.set(item.id, { text, timer });
-  }
 
-  function requeuePendingQueueDeliveries(error: string): void {
-    for (const id of [...pendingQueueDeliveries.keys()]) {
-      clearPendingQueueDelivery(id);
-      const current = queueStore.get(id);
-      if (current?.status === "delivering") {
-        queueStore.update(id, { status: "queued", error });
-      }
-    }
-  }
 
-  function finishPendingQueueDelivery(text: string, ctx: any): void {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    for (const [id, pending] of pendingQueueDeliveries) {
-      if (pending.text.replace(/\s+/g, " ").trim() !== normalized) continue;
-      clearPendingQueueDelivery(id);
-      const updated = queueStore.update(id, { status: "sent", error: undefined });
-      if (!updated) return;
-      try {
-        ctx.ui.notify(`Sent queued item ${id}`, "info");
-      } catch (error) {
-        if (!isStaleExtensionContextError(error)) throw error;
-        currentCtx = null;
-      }
-      requestQueueRender();
-      return;
-    }
-  }
 
-  function deliverQueueItem(ctx: any, item: PowerlineQueueItem): boolean {
-    if (powerlineCompacting) {
-      queueStore.update(item.id, { status: "queued" });
-      requestQueueRender();
-      return false;
-    }
 
-    queueStore.update(item.id, { status: "delivering", error: undefined });
-    requestQueueRender();
 
-    try {
-      const deliverAs = deliveryModeForItem(ctx, item);
-      const deliveryText = formatQueueDeliveryText(item);
-      trackPendingQueueDelivery(item, deliveryText);
-      if (deliverAs) {
-        pi.sendUserMessage(deliveryText, { deliverAs });
-      } else {
-        pi.sendUserMessage(deliveryText);
-      }
-      return true;
-    } catch (error) {
-      clearPendingQueueDelivery(item.id);
-      if (isStaleExtensionContextError(error)) {
-        queueStore.update(item.id, { status: "queued", error: undefined });
-        currentCtx = null;
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      queueStore.update(item.id, { status: "failed", error: message });
-      ctx.ui.notify(`Failed to send ${item.id}: ${message}`, "error");
-      requestQueueRender();
-      return false;
-    }
-  }
 
-  function cancelPostCompactionDelivery(): void {
-    if (queueDeliveryTimer) clearTimeout(queueDeliveryTimer);
-    queueDeliveryTimer = null;
-    postCompactionDelivery = null;
-  }
 
-  function schedulePostCompactionDelivery(): void {
-    if (!postCompactionDelivery) return;
-    if (queueDeliveryTimer) clearTimeout(queueDeliveryTimer);
-    const pending = postCompactionDelivery;
-    queueDeliveryTimer = setTimeout(() => {
-      queueDeliveryTimer = null;
-      if (pending !== postCompactionDelivery) return;
-      if (pending.generation !== sessionGeneration || !currentCtx) {
-        cancelPostCompactionDelivery();
-        return;
-      }
-      try {
-        // Busy readiness checks must not read the inbox, render, or enqueue a late follow-up.
-        if (!currentCtx.isIdle()) {
-          schedulePostCompactionDelivery();
-          return;
-        }
-        const items = queueStore.queuedDeliveryItems(pending.context, "post-compact");
-        const item = items[0];
-        if (items.length <= 1) cancelPostCompactionDelivery();
-        if (!item) return;
-        deliverQueueItem(currentCtx, item);
-        schedulePostCompactionDelivery();
-      } catch (error) {
-        if (!isStaleExtensionContextError(error)) throw error;
-        cancelPostCompactionDelivery();
-        currentCtx = null;
-      }
-    }, 50);
-  }
-
-  function blockPostCompactionQueue(ctx: any, errorMessage: string): void {
-    const items = queueStore.queuedDeliveryItems(getQueueContext(ctx), "post-compact");
-    for (const item of items) {
-      queueStore.update(item.id, { status: "blocked", error: errorMessage });
-    }
-    if (items.length > 0) {
-      ctx.ui.notify(`Kept ${items.length} post-compaction item${items.length === 1 ? "" : "s"} blocked`, "warning");
-      requestQueueRender();
-    }
-  }
-
-  function finishFailedCompaction(ctx: any, errorMessage: string): void {
+  function finishFailedCompaction(_ctx: any, _errorMessage: string): void {
     compactionGeneration++;
     powerlineCompacting = false;
-    cancelPostCompactionDelivery();
-    blockPostCompactionQueue(ctx, errorMessage);
-    requestQueueRender();
   }
 
-  async function chooseQueueAction(ctx: any, item: PowerlineQueueItem): Promise<void> {
-    const actions: SelectItem[] = [
-      { value: "send", label: "Send to current session", description: "Deliver as prompt/follow-up" },
-      { value: "edit", label: "Edit in prompt", description: "Move text into the editor" },
-      { value: "retry", label: "Retry", description: "Mark queued and deliver" },
-      { value: "clear", label: "Clear", description: "Mark item done" },
-      { value: "cancel", label: "Cancel" },
-    ];
-    const selected = await showSelectOverlay(ctx, `Queue item ${item.id}`, buildStashPreview(item.text, 72), actions, actions.length);
-    if (!selected || selected.value === "cancel") return;
 
-    if (selected.value === "send") {
-      deliverQueueItem(ctx, item);
-      return;
-    }
 
-    if (selected.value === "retry") {
-      const updated = queueStore.update(item.id, { status: "queued", error: undefined });
-      if (updated) deliverQueueItem(ctx, updated);
-      return;
-    }
 
-    if (selected.value === "edit") {
-      ctx.ui.setEditorText(item.text);
-      queueStore.clear(item.id);
-      requestQueueRender();
-      return;
-    }
-
-    if (selected.value === "clear") {
-      queueStore.clear(item.id);
-      ctx.ui.notify(`Cleared ${item.id}`, "info");
-      requestQueueRender();
-    }
-  }
-
-  async function openQueuePicker(ctx: any): Promise<void> {
-    const active = queueStore.activeItems(getQueueContext(ctx));
-    if (active.length === 0) {
-      ctx.ui.notify("No queued items", "info");
-      return;
-    }
-
-    const items: SelectItem[] = active.map((item) => ({
-      value: item.id,
-      label: queueItemLabel(item),
-      description: queueItemDescription(item),
-    }));
-    const selected = await showSelectOverlay(
-      ctx,
-      "Powerline queue",
-      "↑↓ navigate • enter manage • esc cancel",
-      items,
-      Math.min(active.length, 12),
-    );
-    if (!selected) return;
-
-    const item = active.find((candidate) => candidate.id === selected.value);
-    if (item) await chooseQueueAction(ctx, item);
-  }
-
-  function resolveCommandTarget(_ctx: any, spec: string): QueueTarget {
-    const normalized = spec.trim().replace(/^@/, "");
-    if (normalized === "current") return { kind: "current-session" };
-    if (normalized === "global") return { kind: "global" };
-
-    const cwd = queueStore.resolveAlias(normalized);
-    if (!cwd) throw new Error(`Unknown project alias @${normalized}. Use /queue alias ${normalized} <path> first.`);
-    return { kind: "project", cwd, alias: normalized };
-  }
-
-  function sendOrRetryQueueItem(ctx: any, idPrefix: string): void {
-    const item = queueStore.get(idPrefix);
-    if (!item) {
-      ctx.ui.notify(`No unique queue item matches ${idPrefix}`, "warning");
-      return;
-    }
-    const updated = queueStore.update(item.id, { status: "queued", error: undefined });
-    if (updated) deliverQueueItem(ctx, updated);
-  }
 
   // Track session start
   pi.on("session_start", async (event, ctx) => {
@@ -1862,7 +1569,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     liveAssistantUsage = null;
     approximateContextUsage = event.reason === "reload" ? estimateUnknownContextUsage(ctx) : null;
     powerlineCompacting = false;
-    cancelPostCompactionDelivery();
     if (event.reason === "reload") {
       stashedEditorText = takeActiveStashReload(ctx);
     } else {
@@ -1911,8 +1617,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     stashShortcutInputUnsubscribe = null;
     shellSession?.dispose();
     shellSession = null;
-    cancelPostCompactionDelivery();
-    requeuePendingQueueDeliveries("Session ended before queued message started");
     powerlineCompacting = false;
     bashModeActive = false;
     currentCtx = null;
@@ -1995,7 +1699,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   // Custom-message turns have no user prompt and must preserve the current task.
   pi.on("before_agent_start", async (event, ctx) => {
     if ("messageType" in event && event.messageType === "custom") return;
-    finishPendingQueueDelivery(event.prompt, ctx);
     lastUserPrompt = event.prompt;
     if (ctx.hasUI) {
     }
@@ -2084,7 +1787,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     currentCtx = ctx;
     const message = event.message;
     if (isRecord(message) && (message.role as string) === "user") {
-      finishPendingQueueDelivery(getPromptHistoryText(message.content), ctx);
     }
   });
 
@@ -2115,8 +1817,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     approximateContextUsage = null;
     coreContextUsageCache.reset();
     compactionGeneration++;
-    cancelPostCompactionDelivery();
-    requestQueueRender();
   });
 
   pi.on("session_compact", async (_event, ctx) => {
@@ -2127,13 +1827,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     approximateContextUsage = estimateUnknownContextUsage(ctx);
     coreContextUsageCache.reset();
     compactionGeneration++;
-    cancelPostCompactionDelivery();
-    const context = getQueueContext(ctx);
-    if (queueStore.queuedDeliveryItems(context, "post-compact").length > 0) {
-      postCompactionDelivery = { generation: sessionGeneration, context };
-      schedulePostCompactionDelivery();
-    }
-    requestQueueRender();
   });
 
   pi.on("session_compact_failed", async (event, ctx) => {
@@ -2141,7 +1834,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async () => {
-    schedulePostCompactionDelivery();
   });
 
   // Helper to extract recent agent response text (skipping thinking blocks)
@@ -2311,9 +2003,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     if (matchesConfiguredShortcut(data, resolvedShortcuts.cutEditor)) {
       return { kind: "cutEditor" };
     }
-    if (matchesConfiguredShortcut(data, resolvedShortcuts.queueOpen)) {
-      return { kind: "queueOpen" };
-    }
     if (matchesConfiguredShortcut(data, bashModeSettings.toggleShortcut)) {
       return { kind: "bashMode" };
     }
@@ -2336,11 +2025,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
         ctx.ui.setEditorText("");
         ctx.ui.notify("Cut editor text", "info");
       }
-      return;
-    }
-
-    if (action.kind === "queueOpen") {
-      void openQueuePicker(ctx);
       return;
     }
 
@@ -2433,102 +2117,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     }
 
     requestStatusRender();
-    schedulePostCompactionDelivery();
   });
 
-  pi.registerCommand("queue", {
-    description: "Manage Powerline queued prompts and project aliases",
-    handler: async (args, ctx) => {
-      currentCtx = ctx;
-      const parts = args.trim().split(/\s+/).filter(Boolean);
-      const action = parts[0];
-
-      if (!action) {
-        await openQueuePicker(ctx);
-        return;
-      }
-
-      if (action === "alias") {
-        const alias = parts[1];
-        const aliasPath = parts.slice(2).join(" ") || ctx.cwd || process.cwd();
-        if (!alias) {
-          ctx.ui.notify("Usage: /queue alias <name> [path]", "info");
-          return;
-        }
-        try {
-          queueStore.setAlias(alias, aliasPath);
-          ctx.ui.notify(`Alias @${alias} → ${aliasPath}`, "info");
-        } catch (error) {
-          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-        }
-        return;
-      }
-
-      if (action === "send" || action === "retry") {
-        const id = parts[1];
-        if (!id) {
-          const item = queueStore.queuedDeliveryItems(getQueueContext(ctx))[0];
-          if (!item) {
-            ctx.ui.notify("No queued item to send", "info");
-            return;
-          }
-          sendOrRetryQueueItem(ctx, item.id);
-          return;
-        }
-        sendOrRetryQueueItem(ctx, id);
-        return;
-      }
-
-      if (action === "clear") {
-        const id = parts[1];
-        if (id === "all") {
-          const active = queueStore.activeItems(getQueueContext(ctx));
-          for (const item of active) queueStore.clear(item.id);
-          ctx.ui.notify(`Cleared ${active.length} queued item${active.length === 1 ? "" : "s"}`, "info");
-          requestQueueRender();
-          return;
-        }
-        if (!id) {
-          ctx.ui.notify("Usage: /queue clear <id|all>", "info");
-          return;
-        }
-        const item = queueStore.get(id);
-        if (!item) {
-          ctx.ui.notify(`No unique queued item matches ${id}`, "warning");
-          return;
-        }
-        queueStore.clear(item.id);
-        ctx.ui.notify(`Cleared ${item.id}`, "info");
-        requestQueueRender();
-        return;
-      }
-
-      if (action === "target") {
-        const id = parts[1];
-        const spec = parts[2];
-        if (!id || !spec) {
-          ctx.ui.notify("Usage: /queue target <id> @alias|global|current", "info");
-          return;
-        }
-        const item = queueStore.get(id);
-        if (!item) {
-          ctx.ui.notify(`No unique queue item matches ${id}`, "warning");
-          return;
-        }
-        try {
-          const target = resolveCommandTarget(ctx, spec);
-          queueStore.update(item.id, { target });
-          ctx.ui.notify(`Retargeted ${item.id}`, "info");
-          requestQueueRender();
-        } catch (error) {
-          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-        }
-        return;
-      }
-
-      ctx.ui.notify("Usage: /queue [send|retry|clear|target|alias]", "info");
-    },
-  });
 
   // Command to toggle/configure
   const powerlineCommandHandler = async (args: string, ctx: any): Promise<void> => {
@@ -2564,8 +2154,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           ctx.ui.setWidget("powerline-bash-transcript", undefined);
           ctx.ui.setWidget("powerline-status", undefined);
           ctx.ui.setWidget("powerline-pending-send", undefined);
-          ctx.ui.setWidget("powerline-queue-preview", undefined);
-          ctx.ui.setWidget("powerline-last-prompt", undefined);
+                ctx.ui.setWidget("powerline-last-prompt", undefined);
           footerDataRef = null;
           tuiRef = null;
           currentEditor = null;
@@ -2753,14 +2342,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       : false;
 
     const thinkingLevel = currentThinkingLevel ?? thinkingLevelFromSession ?? getThinkingLevelFn?.() ?? "off";
-    const queueSummary: QueueSummary = allSegmentIds.includes("queue") ? getQueueSummary(ctx) : {
-      queueCount: 0,
-      blockedCount: 0,
-      compacting: powerlineCompacting,
-      leadingText: null,
-      leadingIntent: null,
-      leadingStatus: null,
-    };
 
     return {
       model: ctx.model,
@@ -2776,7 +2357,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       autoCompactEnabled: ctx.settingsManager?.getCompactionSettings?.()?.enabled ?? true,
       customCompactionEnabled: customCompactionEnabled || extensionStatuses.has(CUSTOM_COMPACTION_STATUS_KEY),
       usingSubscription,
-      queueSummary,
       sessionStartTime,
       shellModeActive: bashModeActive,
       shellRunning: shellSession?.state.running ?? false,
@@ -2879,21 +2459,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     return [...getResponsiveLayout(width, theme).secondaryLines];
   }
 
-  function renderPowerlineQueuePreviewLines(width: number, theme: Theme): string[] {
-    if (!currentCtx) return [];
-    const summary = getQueueSummary(currentCtx);
-    if (!summary.leadingText) return [];
-
-    let prefix = "queued: ";
-    if (summary.leadingStatus === "blocked" || summary.leadingStatus === "failed") {
-      prefix = "blocked: ";
-    } else if (summary.leadingStatus === "delivering") {
-      prefix = "sending: ";
-    }
-    const text = `${prefix}${summary.leadingText.replace(/\s+/g, " ").trim()}`;
-    const color = summary.leadingStatus === "blocked" || summary.leadingStatus === "failed" ? "warning" : "dim";
-    return [` ${theme.fg(color, truncateToWidth(text, Math.max(1, width - 1), "…"))}`];
-  }
 
   function renderPendingSendLines(width: number, theme: Theme): string[] {
     if (!pendingSend) return [];
@@ -3017,13 +2582,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       },
     }), { placement: "belowEditor" });
 
-    ctx.ui.setWidget("powerline-queue-preview", (_tui: any, theme: Theme) => ({
-      dispose() {},
-      invalidate() {},
-      render(width: number): string[] {
-        return measureWidget("queue-preview", () => renderPowerlineQueuePreviewLines(width, theme));
-      },
-    }), { placement: "belowEditor" });
 
     if (editorPerf.options.lastPrompt) {
       ctx.ui.setWidget("powerline-last-prompt", () => ({
@@ -3070,7 +2628,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     ctx.ui.setWidget("powerline-bash-transcript", undefined);
     ctx.ui.setWidget("powerline-status", undefined);
     ctx.ui.setWidget("powerline-pending-send", undefined);
-    ctx.ui.setWidget("powerline-queue-preview", undefined);
     ctx.ui.setWidget("powerline-last-prompt", undefined);
 
     let autocompleteFixed = !bashModeSettings.completions;
@@ -3185,23 +2742,14 @@ export default function powerlineFooter(pi: ExtensionAPI) {
         }
 
         const isSubmit = keybindings.matches(data, "tui.input.submit") && !keybindings.matches(data, "tui.input.newLine");
-        const isFollowUpSubmit = keybindings.matches(data, "app.message.followUp");
         if (!powerlineCompacting && !bashModeActive && isSubmit && typeof ctx.compact === "function") {
           const editorText = editor.getExpandedText().trim();
-          const compactQueuedPrompt = config.queue.compactPromptMode === "queue"
-            ? parseCompactQueuedPrompt(editorText)
-            : null;
-          if (editorText === "/compact" || compactQueuedPrompt) {
+          if (editorText === "/compact") {
             editor.addToHistory?.(editorText);
             editor.setText("");
-            if (compactQueuedPrompt) {
-              capturePostCompactPrompt(ctx, compactQueuedPrompt);
-            }
             powerlineCompacting = true;
-            cancelPostCompactionDelivery();
             const generation = sessionGeneration;
             const operation = ++compactionGeneration;
-            requestQueueRender();
             ctx.compact({
               onError: (error: Error) => {
                 // Preparation can fail before session_before_compact increments the operation.
@@ -3212,23 +2760,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
             });
             return;
           }
-        }
-
-        // Native mode leaves mid-compaction submits to Pi, which queues them and sends them when compaction ends.
-        if (powerlineCompacting && config.queue.compactPromptMode === "queue" && !bashModeActive && (isSubmit || isFollowUpSubmit)) {
-          const text = editor.getExpandedText().trim();
-          if (!text) {
-            sendPendingNow();
-            return;
-          }
-          if (text.startsWith("/")) {
-            originalHandleInput(data);
-            return;
-          }
-          editor.addToHistory?.(text);
-          editor.setText("");
-          capturePostCompactPrompt(ctx, text);
-          return;
         }
 
         // Ctrl+S is handled only here, where the editor has focus: Pi's
