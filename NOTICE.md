@@ -108,3 +108,12 @@ pretty-tui's cornered lines.
 Resource browsing (`fs/`), the tool-view controller modes, bulk session cleanup,
 dialogs, and the sidebar *status* footer line (the powerline footer owns the
 footer here).
+
+## Removals for v0.4.0
+
+Approved by the user on 2026-11-07 under the UI bundle rewrite. Each entry lists the command,
+the code, and the removal sites. Checks: `npx tsc --noEmit` and `npm test` after each removal.
+
+| Command | Removed code | Sites in `extensions/powerline/index.ts` | Verified |
+| --- | --- | --- | --- |
+| `/cd` | `extensions/powerline/cd-command.ts` (190 lines) | import line 43, `registerCdCommand(...)` call line 2525 | tsc exit 0, 5 probes pass, reach 78/78 |

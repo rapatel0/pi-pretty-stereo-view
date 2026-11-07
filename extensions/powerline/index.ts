@@ -40,7 +40,6 @@ import { EditorPerfProfiler, readEditorPerfOptions } from "./editor-performance.
 import { CoreContextUsageCache, estimateInitialContextTokens, estimateUnknownContextUsage, resolveDisplayContextUsage, type CoreContextUsage } from "./context-usage.ts";
 import { isStaleExtensionContextError, shouldShowStartupWelcome } from "./lifecycle.ts";
 import { getDefaultColors } from "./theme.ts";
-import { registerCdCommand } from "./cd-command.ts";
 import {
   isSupportedSuperShortcut,
   matchesConfiguredShortcut,
@@ -2521,8 +2520,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     requestStatusRender();
     schedulePostCompactionDelivery();
   });
-
-  registerCdCommand(pi, () => currentCtx?.cwd ?? process.cwd());
 
   pi.registerCommand("reply", {
     description: "Quote a previous user or assistant message into the editor",
