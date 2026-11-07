@@ -5,8 +5,8 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { CURSOR_MARKER, isKeyRelease, type AutocompleteProvider, type SelectItem, SelectList, truncateToWidth, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { CURSOR_MARKER, isKeyRelease, type AutocompleteProvider, truncateToWidth, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 import type { ColorScheme, SegmentContext, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./types.ts";
@@ -162,9 +162,6 @@ type PromptHistoryState = { savedPromptHistory: string[] };
 type SessionAssistantUsage = AssistantMessage["usage"];
 
 
-function getSessionId(ctx: any): string {
-  return ctx.sessionManager.getSessionId();
-}
 
 
 
@@ -315,26 +312,6 @@ function readSettingsFile(settingsPath: string): Record<string, unknown> {
   }
 }
 
-function readWritableSettingsFile(settingsPath: string): Record<string, unknown> | null {
-  if (!existsSync(settingsPath)) {
-    return {};
-  }
-
-  try {
-    const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    if (!isRecord(parsed)) {
-      console.debug(`[powerline-footer] Refusing to write settings to non-object file at ${settingsPath}`);
-      return null;
-    }
-
-    return parsed;
-  } catch (error) {
-    // Do not overwrite malformed user settings with partial data. Surface the failure
-    // through the command handler so the user can fix the file intentionally.
-    console.debug(`[powerline-footer] Failed to parse settings at ${settingsPath}:`, error);
-    return null;
-  }
-}
 
 function readCompactionPolicyEnabled(configPath: string): boolean | undefined {
   if (!existsSync(configPath)) return undefined;
@@ -370,32 +347,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 
 
-function readSettings(cwd: string = process.cwd()): Record<string, unknown> {
-  return mergeSettings(readSettingsFile(getSettingsPath()), readSettingsFile(getProjectSettingsPath(cwd)));
+
+// One write target: this package's own plane in the agent dir. settings.json and the project
+// .pi/settings.json stay readable, because users own those files, but nothing here writes them.
+function getPlanePath(): string {
+  return getAgentPath("pi-pretty-stereo-view.json");
 }
 
-function writePowerlineSetting(cwd: string, update: (existingPowerlineSetting: unknown) => unknown): boolean {
-  const globalSettingsPath = getSettingsPath();
-  const projectSettingsPath = getProjectSettingsPath(cwd);
-  const globalSettings = readWritableSettingsFile(globalSettingsPath);
-  const projectSettings = readWritableSettingsFile(projectSettingsPath);
-
-  if (globalSettings === null || projectSettings === null) {
-    return false;
+function readPlane(): Record<string, unknown> {
+  try {
+    const planePath = getPlanePath();
+    if (!existsSync(planePath)) return {};
+    const parsed: unknown = JSON.parse(readFileSync(planePath, "utf8"));
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
+}
 
-  const writeToProject = Object.prototype.hasOwnProperty.call(projectSettings, "powerline");
-  const settingsPath = writeToProject ? projectSettingsPath : globalSettingsPath;
-  const settings = writeToProject ? projectSettings : globalSettings;
+function readSettings(cwd: string = process.cwd()): Record<string, unknown> {
+  // Precedence: global settings, then project settings, then our own plane.
+  return mergeSettings(mergeSettings(readSettingsFile(getSettingsPath()), readSettingsFile(getProjectSettingsPath(cwd))), readPlane());
+}
 
-  settings.powerline = update(settings.powerline);
+function writePowerlineSetting(_cwd: string, update: (existingPowerlineSetting: unknown) => unknown): boolean {
+  const planePath = getPlanePath();
+  const plane = readPlane();
+  const next: Record<string, unknown> = { ...plane, powerline: update(plane.powerline) };
 
   try {
-    mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+    mkdirSync(dirname(planePath), { recursive: true });
+    writeFileSync(planePath, `${JSON.stringify(next, null, 2)}\n`);
     return true;
   } catch (error) {
-    console.debug(`[powerline-footer] Failed to persist powerline setting to ${settingsPath}:`, error);
+    console.debug(`[powerline-footer] Failed to persist powerline setting to ${planePath}:`, error);
     return false;
   }
 }
@@ -1185,69 +1170,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     ctx.ui.notify("Bash mode disabled", "info");
   };
 
-  function overlaySelectListTheme(theme: Theme) {
-    return {
-      selectedPrefix: (text: string) => theme.fg("accent", text),
-      selectedText: (text: string) => theme.fg("accent", text),
-      description: (text: string) => theme.fg("muted", text),
-      scrollInfo: (text: string) => theme.fg("dim", text),
-      noMatch: (text: string) => theme.fg("warning", text),
-    };
-  }
 
-  async function showSelectOverlay(
-    ctx: any,
-    title: string,
-    hint: string,
-    items: SelectItem[],
-    maxVisible: number,
-  ): Promise<SelectItem | null> {
-    return ctx.ui.custom(
-      (tui: any, theme: Theme, _keybindings: any, done: (result: SelectItem | null) => void) => {
-        const selectList = new SelectList(items, maxVisible, overlaySelectListTheme(theme));
-        const border = (text: string) => theme.fg("dim", text);
-        const wrapRow = (text: string, innerWidth: number): string => {
-          return `${border("│")}${truncateToWidth(text, innerWidth, "…", true)}${border("│")}`;
-        };
-
-        selectList.onSelect = (item) => done(item);
-        selectList.onCancel = () => done(null);
-
-        return {
-          render: (width: number) => {
-            const innerWidth = Math.max(1, width - 2);
-            const lines: string[] = [];
-
-            lines.push(border(`╭${"─".repeat(innerWidth)}╮`));
-            lines.push(wrapRow(theme.fg("accent", theme.bold(title)), innerWidth));
-            lines.push(border(`├${"─".repeat(innerWidth)}┤`));
-
-            for (const line of selectList.render(innerWidth)) {
-              lines.push(wrapRow(line, innerWidth));
-            }
-
-            lines.push(border(`├${"─".repeat(innerWidth)}┤`));
-            lines.push(wrapRow(theme.fg("dim", hint), innerWidth));
-            lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
-
-            return lines;
-          },
-          invalidate: () => selectList.invalidate(),
-          handleInput: (data: string) => {
-            selectList.handleInput(data);
-            tui.requestRender();
-          },
-        };
-      },
-      {
-        overlay: true,
-        overlayOptions: () => ({
-          verticalAlign: "center",
-          horizontalAlign: "center",
-        }),
-      },
-    );
-  }
 
 
 
@@ -1358,7 +1281,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
   });
 
-  pi.on("session_shutdown", async (event, ctx) => {
+  pi.on("session_shutdown", async (_event, _ctx) => {
     sessionGeneration++;
     restorePendingSend();
     statusRenderScheduler.cancel();

@@ -122,3 +122,19 @@ the code, and the removal sites. Checks: `npx tsc --noEmit` and `npm test` after
 | `/vibe` | `extensions/powerline/working-vibes.ts` (794 lines) | 19-line import block; `registerCommand("vibe")` block; the whole `pi.on("tool_call")` handler, which existed only for vibe refresh; `initVibeManager` and four lifecycle hook calls; `workingVibes` config field, default, and normalizer in `powerline-config.ts`, and the local default | tsc exit 0, 5 probes pass, reach 75/75 |
 | `/queue` | `extensions/powerline/queue/` (store.ts, types.ts), `projects.json` writer | `registerCommand("queue")`; `queueOpen` shortcut binding, union member, key-table entry, matcher and dispatcher branches; 19 queue functions (`getQueueSummary`, `captureQueueItem`, `deliverQueueItem`, `schedulePostCompactionDelivery`, `openQueuePicker`, `sendOrRetryQueueItem`, and others); `queueStore`, `queueSummaryCache`, `queueDeliveryTimer`, `pendingQueueDeliveries`, `postCompactionDelivery`, `getQueueSessionId`, `QUEUE_SUMMARY_CACHE_TTL_MS`; the `queue-preview` widget; the mid-compaction submit intercept; the `queue` status segment, its registry entry, its id in `types.ts`, `QueueSummary`, `SegmentContext.queueSummary`, its `theme.ts` colour, and 5 preset entries; `CompactPromptMode`, `normalizeQueueOptions`, and the `queue` config field, default and normalizer | tsc exit 0, 5 probes pass, reach 73/73 |
 | `/stash-history` | prompt-history picker cluster in `index.ts`, `matchesCtrlSStashInput` and `matchesStashShortcutInput` in `shortcuts.ts`, `stash-history.json` reader and writer | `registerCommand("stash-history")`; the `stashHistory` binding, union member, default `ctrl+alt+h`, key-table entry, matcher and dispatcher branches; the `isPromptHistoryShortcutInput` branch; 35 declarations including `openStashHistory`, `stashOrRestoreEditorText`, the ActiveStashReload subsystem with its `globalThis` Symbol, `readPersistedStashHistory`, `persistStashHistory`, `readRecentProjectPrompts`, `readFileTail`, `getSessionsPath`, `getProjectSessionsPath`, `buildStashPreview`, `pushStashHistory`; state `stashedEditorText`, `stashedPromptHistory`, `stashShortcutInputUnsubscribe` and its terminal-input listener; the `stash` status line; `stashSharpSShortcut` in both config files | tsc exit 0, 5 probes pass, reach 73/73 |
+
+## Configuration plane (U2, first slice)
+
+Powerline settings now persist to `pi-pretty-stereo-view.json` in the agent dir, which is this
+package's own file. `settings.json` and the project `.pi/settings.json` are read but never written,
+which satisfies ruling B1 and the dotfiles ownership rule. Read precedence: global `settings.json`,
+then project `.pi/settings.json`, then our plane, so an existing `powerline` block in
+`settings.json` keeps working until a change moves it. Consequence to know: after the first preset or
+option change, that change lives in our plane and wins over the older block.
+
+Removed with this slice: `readWritableSettingsFile`, whose only job was the old write dance. Also
+removed: dead bindings left by earlier removals in this branch — `closeSync`, `openSync`, `readSync`,
+`readdirSync`, `statSync`, `getSessionId`, `showSelectOverlay`, `overlaySelectListTheme`, `SelectItem`,
+`SelectList`, `isKeyRelease` in `shortcuts.ts` (orphaned by the stash removal), and `visibleWidth` in
+`segments.ts` (orphaned by the queue removal). `npx tsc --noEmit --noUnusedLocals` now reports zero
+findings in every touched file, which is the tree's baseline state.
