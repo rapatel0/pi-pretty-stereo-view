@@ -22,7 +22,6 @@ export interface PowerlineConfig {
   invalidSecondaryOverflow: string | null;
   workingIndicatorPlacement: WorkingIndicatorPlacement;
   invalidWorkingIndicatorPlacement: string | null;
-  stashSharpSShortcut: boolean;
   sendDelayMs: number;
   autoFollowUp: boolean;
 }
@@ -349,7 +348,6 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     invalidSecondaryOverflow: null,
     workingIndicatorPlacement: "editor-border",
     invalidWorkingIndicatorPlacement: null,
-    stashSharpSShortcut: false,
     sendDelayMs: 0,
     autoFollowUp: false,
   };
@@ -384,7 +382,6 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     invalidSecondaryOverflow,
     workingIndicatorPlacement,
     invalidWorkingIndicatorPlacement,
-    stashSharpSShortcut: value.stashSharpSShortcut === true,
     sendDelayMs: typeof value.sendDelayMs === "number" && Number.isFinite(value.sendDelayMs) && value.sendDelayMs > 0
       ? value.sendDelayMs
       : 0,
@@ -449,7 +446,7 @@ export function nextPowerlineSettingWithPreset(existingPowerlineSetting: unknown
 
 export function nextPowerlineSettingWithOptions(
   existingPowerlineSetting: unknown,
-  updates: Partial<Pick<PowerlineConfig, "stashSharpSShortcut" | "placement">>,
+  updates: Partial<Pick<PowerlineConfig, "placement">>,
   currentPreset: StatusLinePreset,
 ): unknown {
   if (!isRecord(existingPowerlineSetting)) {

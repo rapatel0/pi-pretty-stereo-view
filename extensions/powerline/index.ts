@@ -42,8 +42,6 @@ import { getDefaultColors } from "./theme.ts";
 import {
   isSupportedSuperShortcut,
   matchesConfiguredShortcut,
-  matchesCtrlSStashInput,
-  matchesStashShortcutInput,
   shortcutConflictKey,
   shortcutUsesSuper,
 } from "./shortcuts.ts";
@@ -53,7 +51,6 @@ import { canWaitAsFollowUp } from "./auto-follow-up.ts";
 // pattern text contains no literal control character for regex-lint rules.
 const ANSI_ESCAPE_CHAR = "\x1B";
 const ANSI_SGR_PATTERN = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
-const STASH_HISTORY_CSI_U_PATTERN = new RegExp(`^${ANSI_ESCAPE_CHAR}\\[104(?::\\d*)?(?::\\d*)?;7(?::\\d+)?u$`);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Configuration
@@ -75,7 +72,6 @@ let config: PowerlineConfig = {
   invalidSecondaryOverflow: null,
   workingIndicatorPlacement: "editor-border",
   invalidWorkingIndicatorPlacement: null,
-  stashSharpSShortcut: false,
   sendDelayMs: 0,
   autoFollowUp: false,
 };
@@ -86,7 +82,6 @@ let customCompactionEnabled = false;
 type ShortcutBinding = string | null;
 
 export interface PowerlineShortcuts {
-  stashHistory: ShortcutBinding;
   copyEditor: ShortcutBinding;
   cutEditor: ShortcutBinding;
   editorStart: ShortcutBinding;
@@ -95,18 +90,10 @@ export interface PowerlineShortcuts {
 
 type PowerlineShortcutKey = keyof PowerlineShortcuts;
 type PowerlineShortcutAction =
-  | { kind: "stashHistory" }
   | { kind: "copyEditor" }
   | { kind: "cutEditor" }
   | { kind: "bashMode" };
-const STASH_HISTORY_LIMIT = 12;
-const PROJECT_PROMPT_HISTORY_LIMIT = 50;
-const PROJECT_PROMPT_HISTORY_FILE_LIMIT = 50;
-const PROJECT_PROMPT_HISTORY_MAX_BYTES = 3 * 1024 * 1024;
-const PROJECT_PROMPT_HISTORY_FILE_MAX_BYTES = 64 * 1024;
-const STASH_PREVIEW_WIDTH = 72;
 const DEFAULT_SHORTCUTS: PowerlineShortcuts = {
-  stashHistory: "ctrl+alt+h",
   copyEditor: "ctrl+alt+c",
   cutEditor: "ctrl+alt+x",
   editorStart: "super+shift+up",
@@ -118,7 +105,7 @@ const DEFAULT_BASH_MODE_SETTINGS = {
   transcriptMaxLines: 2000,
   transcriptMaxBytes: 512 * 1024,
 } as const satisfies BashModeSettings;
-const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["stashHistory", "copyEditor", "cutEditor", "editorStart", "editorEnd"];
+const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["copyEditor", "cutEditor", "editorStart", "editorEnd"];
 const APP_RESERVED_SHORTCUTS = [
   "escape",
   "ctrl+c",
@@ -166,42 +153,21 @@ const CONTEXT_STATUS_RENDER_MS = 250;
 const EDITOR_STATUS_DEFER_MS = 150;
 const PROMPT_HISTORY_TRACKED = Symbol.for("powerlinePromptHistoryTracked");
 const PROMPT_HISTORY_STATE_KEY = Symbol.for("powerlinePromptHistoryState");
-const ACTIVE_STASH_RELOAD_STATE_KEY = Symbol.for("pi-powerline-footer.active-stash-reload.v1");
 
 interface PromptHistoryEditor {
   addToHistory?: (text: string) => void;
 }
 
 type PromptHistoryState = { savedPromptHistory: string[] };
-type ActiveStashReloadState = { version: 1; bySessionId: Map<string, string> };
 type SessionAssistantUsage = AssistantMessage["usage"];
 
-const activeStashReloadState = (Reflect.get(globalThis, ACTIVE_STASH_RELOAD_STATE_KEY) as ActiveStashReloadState | undefined)
-  ?? { version: 1, bySessionId: new Map<string, string>() };
-Reflect.set(globalThis, ACTIVE_STASH_RELOAD_STATE_KEY, activeStashReloadState);
 
 function getSessionId(ctx: any): string {
   return ctx.sessionManager.getSessionId();
 }
 
-function clearActiveStashReload(ctx: any): void {
-  activeStashReloadState.bySessionId.delete(getSessionId(ctx));
-}
 
-function takeActiveStashReload(ctx: any): string | null {
-  const sessionId = getSessionId(ctx);
-  const transfers = activeStashReloadState.bySessionId;
-  const text = transfers.get(sessionId) ?? null;
-  transfers.delete(sessionId);
-  return text;
-}
 
-function transferActiveStashReload(ctx: any, text: string | null): void {
-  const transfers = activeStashReloadState.bySessionId;
-  const sessionId = getSessionId(ctx);
-  if (text === null) transfers.delete(sessionId);
-  else transfers.set(sessionId, text);
-}
 
 function getUsageTokenTotal(usage: SessionAssistantUsage): number {
   const totalTokens = "totalTokens" in usage && typeof usage.totalTokens === "number" ? usage.totalTokens : 0;
@@ -395,194 +361,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function getStashHistoryPath(): string {
-  return getAgentPath("powerline-footer", "stash-history.json");
-}
 
-function getSessionsPath(): string {
-  return getAgentPath("sessions");
-}
 
-function getProjectSessionsPath(cwd: string): string {
-  const projectKey = cwd
-    .replace(/^[/\\]+|[/\\]+$/g, "")
-    .replace(/[\\/]+/g, "-");
 
-  return join(getSessionsPath(), `--${projectKey}--`);
-}
 
-function getPromptHistoryText(content: unknown): string {
-  if (typeof content === "string") {
-    return content.replace(/\s+/g, " ").trim();
-  }
 
-  if (!Array.isArray(content)) {
-    return "";
-  }
 
-  const parts: string[] = [];
-  for (const block of content) {
-    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
-      continue;
-    }
-    parts.push(block.text);
-  }
 
-  return parts.join("\n").replace(/\s+/g, " ").trim();
-}
 
-function readFileTail(filePath: string, size: number, maxBytes: number): string {
-  const bytesToRead = Math.min(size, maxBytes);
-  if (bytesToRead === 0) {
-    return "";
-  }
-
-  const fd = openSync(filePath, "r");
-  try {
-    const buffer = Buffer.allocUnsafe(bytesToRead);
-    const bytesRead = readSync(fd, buffer, 0, bytesToRead, size - bytesToRead);
-    const text = buffer.toString("utf8", 0, bytesRead);
-    if (size <= bytesToRead) {
-      return text;
-    }
-
-    const firstNewline = text.indexOf("\n");
-    return firstNewline === -1 ? "" : text.slice(firstNewline + 1);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function readRecentProjectPrompts(cwd: string, limit: number): string[] {
-  const sessionsPath = getProjectSessionsPath(cwd);
-  if (!existsSync(sessionsPath)) {
-    return [];
-  }
-
-  const files = readdirSync(sessionsPath)
-    .filter((fileName) => fileName.endsWith(".jsonl"))
-    .map((fileName) => {
-      const filePath = join(sessionsPath, fileName);
-      const stats = statSync(filePath);
-      return { fileName, filePath, mtimeMs: stats.mtimeMs, size: stats.size };
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs || b.fileName.localeCompare(a.fileName))
-    .slice(0, PROJECT_PROMPT_HISTORY_FILE_LIMIT);
-
-  const prompts: string[] = [];
-  const seen = new Set<string>();
-  let remainingBytes = PROJECT_PROMPT_HISTORY_MAX_BYTES;
-
-  for (const file of files) {
-    if (remainingBytes <= 0) {
-      break;
-    }
-
-    const bytesToRead = Math.min(file.size, PROJECT_PROMPT_HISTORY_FILE_MAX_BYTES, remainingBytes);
-    remainingBytes -= bytesToRead;
-    const lines = readFileTail(file.filePath, file.size, bytesToRead).split("\n");
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (!line || !line.includes('"type":"message"') || !line.includes('"role":"user"')) {
-        continue;
-      }
-
-      let entry: unknown;
-      try {
-        entry = JSON.parse(line);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to parse session file ${file.filePath}: ${message}`, { cause: error });
-      }
-
-      if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message) || entry.message.role !== "user") {
-        continue;
-      }
-
-      const text = getPromptHistoryText(entry.message.content);
-      if (!hasNonWhitespaceText(text)) {
-        continue;
-      }
-
-      if (seen.has(text)) {
-        continue;
-      }
-
-      seen.add(text);
-      prompts.push(text);
-      if (prompts.length >= limit) {
-        return prompts;
-      }
-    }
-  }
-
-  return prompts;
-}
-
-function normalizeStashHistoryEntries(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const history: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") {
-      continue;
-    }
-
-    if (!hasNonWhitespaceText(entry)) {
-      continue;
-    }
-
-    if (history[history.length - 1] === entry) {
-      continue;
-    }
-
-    history.push(entry);
-    if (history.length >= STASH_HISTORY_LIMIT) {
-      break;
-    }
-  }
-
-  return history;
-}
-
-function readPersistedStashHistory(): string[] {
-  const stashHistoryPath = getStashHistoryPath();
-
-  try {
-    if (!existsSync(stashHistoryPath)) {
-      return [];
-    }
-
-    const parsed = JSON.parse(readFileSync(stashHistoryPath, "utf-8"));
-    if (!isRecord(parsed)) {
-      console.debug(`[powerline-footer] Ignoring invalid stash history at ${stashHistoryPath}`);
-      return [];
-    }
-
-    return normalizeStashHistoryEntries(parsed.history);
-  } catch (error) {
-    console.debug(`[powerline-footer] Failed to read stash history from ${stashHistoryPath}:`, error);
-    return [];
-  }
-}
-
-function persistStashHistory(history: string[]): void {
-  const stashHistoryPath = getStashHistoryPath();
-  const payload = {
-    version: 1,
-    history: history.slice(0, STASH_HISTORY_LIMIT),
-  };
-
-  try {
-    mkdirSync(dirname(stashHistoryPath), { recursive: true });
-    writeFileSync(stashHistoryPath, `${JSON.stringify(payload, null, 2)}\n`);
-  } catch (error) {
-    console.debug(`[powerline-footer] Failed to persist stash history to ${stashHistoryPath}:`, error);
-  }
-}
 
 function readSettings(cwd: string = process.cwd()): Record<string, unknown> {
   return mergeSettings(readSettingsFile(getSettingsPath()), readSettingsFile(getProjectSettingsPath(cwd)));
@@ -622,7 +408,8 @@ function writePowerlinePresetSetting(preset: StatusLinePreset, cwd: string = pro
 
 function writePowerlineOptionSetting(
   cwd: string,
-  updates: Partial<Pick<PowerlineConfig, "stashSharpSShortcut" | "placement">>,
+  updates: Partial<Pick<PowerlineConfig, "placement">>,
+
   currentPreset: StatusLinePreset,
 ): boolean {
   return writePowerlineSetting(cwd, (existingPowerlineSetting) => (
@@ -645,6 +432,7 @@ function normalizePreset(value: unknown): StatusLinePreset | null {
   return isValidPreset(preset) ? preset : null;
 }
 
+
 function hasNonWhitespaceText(text: string): boolean {
   return text.trim().length > 0;
 }
@@ -655,23 +443,7 @@ function getCurrentEditorText(ctx: any, editor: any): string {
   return ctx.ui.getEditorText?.() ?? editorText ?? "";
 }
 
-function buildStashPreview(text: string, maxWidth: number): string {
-  const compact = text.replace(/\s+/g, " ").trim();
-  if (!compact) return "(empty)";
-  return truncateToWidth(compact, maxWidth, "…");
-}
 
-function pushStashHistory(history: string[], text: string): boolean {
-  if (!hasNonWhitespaceText(text)) return false;
-  if (history[0] === text) return false;
-
-  history.unshift(text);
-  if (history.length > STASH_HISTORY_LIMIT) {
-    history.length = STASH_HISTORY_LIMIT;
-  }
-
-  return true;
-}
 
 function normalizeShortcut(value: string): string {
   const parts = value.trim().toLowerCase().split("+");
@@ -1235,7 +1007,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   let isStreaming = false;
   let tuiRef: any = null;
   let restoreFooterStatusRepaintHook: (() => void) | null = null;
-  let stashShortcutInputUnsubscribe: (() => void) | null = null;
   let lastUserPrompt = "";
   let showLastPrompt = true;
   let lastPromptRenderCache: {
@@ -1245,8 +1016,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     color: string;
     lines: string[];
   } | null = null;
-  let stashedEditorText: string | null = null;
-  let stashedPromptHistory: string[] = readPersistedStashHistory();
   let currentEditor: any = null;
   let bashModeActive = false;
   let bashTranscript = new BashTranscriptStore(bashModeSettings);
@@ -1569,30 +1338,18 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     liveAssistantUsage = null;
     approximateContextUsage = event.reason === "reload" ? estimateUnknownContextUsage(ctx) : null;
     powerlineCompacting = false;
-    if (event.reason === "reload") {
-      stashedEditorText = takeActiveStashReload(ctx);
-    } else {
-      stashedEditorText = null;
-      clearActiveStashReload(ctx);
-    }
-
     const settings = readSettings(ctx.cwd);
     resolvedShortcuts = resolveShortcutConfig(settings);
     bashModeSettings = parseBashModeSettings(settings, resolvedShortcuts);
     showLastPrompt = settings.showLastPrompt !== false;
     config = parsePowerlineConfig(settings.powerline, PRESET_NAMES);
     warnInvalidSegmentSettings(ctx);
-    stashedPromptHistory = readPersistedStashHistory();
     bashModeActive = false;
     bashTranscript = new BashTranscriptStore(bashModeSettings);
     bashCompletionEngine = new BashCompletionEngine();
 
     getThinkingLevelFn = () => ctx.thinkingLevel ?? "off";
     currentThinkingLevel = getThinkingLevelFn();
-
-    if (ctx.hasUI) {
-      ctx.ui.setStatus("stash", stashedEditorText === null ? undefined : "stash");
-    }
 
 
     if (enabled && ctx.hasUI) {
@@ -1602,19 +1359,11 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
-    if (event.reason === "reload") {
-      transferActiveStashReload(ctx, stashedEditorText);
-    } else {
-      clearActiveStashReload(ctx);
-    }
-    stashedEditorText = null;
     sessionGeneration++;
     restorePendingSend();
     statusRenderScheduler.cancel();
     restoreFooterStatusRepaintHook?.();
     restoreFooterStatusRepaintHook = null;
-    stashShortcutInputUnsubscribe?.();
-    stashShortcutInputUnsubscribe = null;
     shellSession?.dispose();
     shellSession = null;
     powerlineCompacting = false;
@@ -1864,14 +1613,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
 
 
-  function addStashHistoryEntry(text: string): void {
-    const changed = pushStashHistory(stashedPromptHistory, text);
-    if (!changed) {
-      return;
-    }
-
-    persistStashHistory(stashedPromptHistory);
-  }
 
   function copyTextToClipboard(ctx: any, text: string, successMessage?: string): void {
     copyToClipboard(text);
@@ -1890,113 +1631,15 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     return null;
   }
 
-  async function selectStashedPromptFromHistory(ctx: any): Promise<string | null> {
-    const historyItems = [...stashedPromptHistory];
-    const items: SelectItem[] = historyItems.map((entry, index) => ({
-      value: String(index),
-      label: `#${index + 1} ${buildStashPreview(entry, STASH_PREVIEW_WIDTH)}`,
-    }));
 
-    const selected = await showSelectOverlay(
-      ctx, "Stash history", "↑↓ navigate • enter insert • esc cancel",
-      items, Math.min(items.length, 10));
-    if (!selected) return null;
 
-    const i = Number.parseInt(selected.value, 10);
-    return historyItems[i] ?? null;
-  }
 
-  async function selectProjectPromptFromHistory(ctx: any, prompts: string[]): Promise<string | null> {
-    const items: SelectItem[] = prompts.map((entry, index) => ({
-      value: String(index),
-      label: `#${index + 1} ${buildStashPreview(entry, STASH_PREVIEW_WIDTH)}`,
-    }));
 
-    const selected = await showSelectOverlay(
-      ctx, "Recent project prompts", "↑↓ navigate • enter insert • esc cancel",
-      items, Math.min(items.length, 10));
-    if (!selected) return null;
 
-    const i = Number.parseInt(selected.value, 10);
-    return prompts[i] ?? null;
-  }
 
-  async function selectPromptHistorySource(
-    ctx: any,
-    stashCount: number,
-  ): Promise<"stash" | "project" | null> {
-    if (stashCount === 0) {
-      return "project";
-    }
-
-    const items: SelectItem[] = [];
-
-    items.push({
-      value: "stash",
-      label: "Stashed prompts",
-      description: `${stashCount} saved`,
-    });
-    items.push({
-      value: "project",
-      label: "Recent project prompts",
-      description: "load on demand",
-    });
-
-    const selected = await showSelectOverlay(
-      ctx, "Prompt history", "↑↓ navigate • enter open • esc cancel",
-      items, items.length);
-    if (!selected) return null;
-
-    return selected.value === "project" ? "project" : "stash";
-  }
-
-  async function insertSelectedPromptHistoryEntry(ctx: any, selected: string): Promise<void> {
-    const currentText = getCurrentEditorText(ctx, currentEditor);
-    if (!hasNonWhitespaceText(currentText)) {
-      ctx.ui.setEditorText(selected);
-      ctx.ui.notify("Inserted prompt", "info");
-      return;
-    }
-
-    const action = await ctx.ui.select("Insert prompt", ["Replace", "Append", "Cancel"]);
-
-    if (action === "Replace") {
-      ctx.ui.setEditorText(selected);
-      ctx.ui.notify("Replaced editor with prompt", "info");
-      return;
-    }
-
-    if (action === "Append") {
-      const separator = currentText.endsWith("\n") || selected.startsWith("\n") ? "" : "\n";
-      ctx.ui.setEditorText(`${currentText}${separator}${selected}`);
-      ctx.ui.notify("Appended prompt", "info");
-    }
-  }
-
-  async function handleSelectedStashHistoryEntry(ctx: any, selected: string): Promise<void> {
-    const action = await ctx.ui.select("Stashed prompt", ["Insert", "Cancel"]);
-    if (action === "Insert") await insertSelectedPromptHistoryEntry(ctx, selected);
-  }
-
-  function isStashShortcutInput(data: string): boolean {
-    return matchesStashShortcutInput(data, { includePrintableSharpS: config.stashSharpSShortcut });
-  }
-
-  function isPromptHistoryShortcutInput(data: string): boolean {
-    return matchesConfiguredShortcut(data, resolvedShortcuts.stashHistory)
-      || (resolvedShortcuts.stashHistory === "ctrl+alt+h" && (
-        STASH_HISTORY_CSI_U_PATTERN.test(data)
-        || data === "\x1b[27;7;104~"
-        || data === "\x1b[27;7;72~"
-      ));
-  }
 
   function getPowerlineShortcutAction(data: string): PowerlineShortcutAction | null {
     if (isKeyRelease(data)) return null;
-
-    if (isPromptHistoryShortcutInput(data)) {
-      return { kind: "stashHistory" };
-    }
     if (matchesConfiguredShortcut(data, resolvedShortcuts.copyEditor)) {
       return { kind: "copyEditor" };
     }
@@ -2011,11 +1654,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   }
 
   function runPowerlineShortcut(ctx: any, action: PowerlineShortcutAction): void {
-    if (action.kind === "stashHistory") {
-      void openStashHistory(ctx);
-      return;
-    }
-
     if (action.kind === "copyEditor" || action.kind === "cutEditor") {
       const text = getEditorTextForClipboard(ctx);
       if (!text) return;
@@ -2034,63 +1672,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     }
   }
 
-  function stashOrRestoreEditorText(ctx: any): void {
-    const rawText = getCurrentEditorText(ctx, currentEditor);
-    const hasStash = stashedEditorText !== null;
 
-    if (!hasNonWhitespaceText(rawText)) {
-      if (!hasStash) {
-        ctx.ui.notify("Nothing to stash", "info");
-        return;
-      }
-
-      ctx.ui.setEditorText(stashedEditorText);
-      stashedEditorText = null;
-      ctx.ui.setStatus("stash", undefined);
-      ctx.ui.notify("Stash restored", "info");
-      return;
-    }
-
-    stashedEditorText = rawText;
-    addStashHistoryEntry(rawText);
-    ctx.ui.setEditorText("");
-    ctx.ui.setStatus("stash", "stash");
-    ctx.ui.notify(hasStash ? "Stash updated" : "Text stashed", "info");
-  }
-
-  async function openStashHistory(ctx: any): Promise<void> {
-    const source = await selectPromptHistorySource(ctx, stashedPromptHistory.length);
-    if (!source) {
-      return;
-    }
-
-    if (source === "project") {
-      let projectPrompts: string[] = [];
-      try {
-        projectPrompts = readRecentProjectPrompts(ctx.cwd, PROJECT_PROMPT_HISTORY_LIMIT);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`Failed to load project prompts: ${message}`, "warning");
-        return;
-      }
-
-      if (projectPrompts.length === 0) {
-        ctx.ui.notify(stashedPromptHistory.length === 0 ? "No prompt history yet" : "No recent project prompts", "info");
-        return;
-      }
-
-      const selected = await selectProjectPromptFromHistory(ctx, projectPrompts);
-      if (!selected) return;
-
-      await insertSelectedPromptHistoryEntry(ctx, selected);
-      return;
-    }
-
-    const selected = await selectStashedPromptFromHistory(ctx);
-    if (!selected) return;
-
-    await handleSelectedStashHistoryEntry(ctx, selected);
-  }
 
   pi.on("agent_end", async (_event, ctx) => {
     isStreaming = false;
@@ -2137,13 +1719,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           bashTranscript.clear();
           bashModeActive = false;
           getPromptHistoryState().savedPromptHistory = [];
-          stashedEditorText = null;
-          clearActiveStashReload(ctx);
-          ctx.ui.setStatus("stash", undefined);
           restoreFooterStatusRepaintHook?.();
           restoreFooterStatusRepaintHook = null;
-          stashShortcutInputUnsubscribe?.();
-          stashShortcutInputUnsubscribe = null;
           restorePendingSend();
           // Clear all custom UI components
           ctx.ui.setEditorComponent(undefined);
@@ -2219,19 +1796,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     placement: () => config.placement,
     preset: () => config.preset,
     runCommand: (cmd, panelCtx) => powerlineCommandHandler(cmd, panelCtx),
-  });
-
-  pi.registerCommand("stash-history", {
-    description: "Open prompt history picker",
-    handler: async (_args, ctx) => {
-      if (!ctx.hasUI) return;
-      if (!enabled) {
-        ctx.ui.notify("Powerline is disabled", "info");
-        return;
-      }
-
-      await openStashHistory(ctx);
-    },
   });
 
   pi.registerCommand("bash-mode", {
@@ -2600,28 +2164,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       return;
     }
 
-    stashShortcutInputUnsubscribe?.();
-    stashShortcutInputUnsubscribe = typeof ctx.ui.onTerminalInput === "function"
-      ? ctx.ui.onTerminalInput((data: string) => {
-        if (!enabled || !ctx.hasUI || tuiRef?.hasOverlay?.()) {
-          return undefined;
-        }
-        if (isStashShortcutInput(data)) {
-          stashOrRestoreEditorText(ctx);
-          tuiRef?.requestRender();
-          return { consume: true };
-        }
-
-        const powerlineShortcutAction = getPowerlineShortcutAction(data);
-        if (!powerlineShortcutAction) {
-          return undefined;
-        }
-
-        runPowerlineShortcut(ctx, powerlineShortcutAction);
-        tuiRef?.requestRender();
-        return { consume: true };
-      })
-      : null;
 
     ctx.ui.setWidget("powerline-top", undefined);
     ctx.ui.setWidget("powerline-secondary", undefined);
@@ -2760,13 +2302,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
             });
             return;
           }
-        }
-
-        // Ctrl+S is handled only here, where the editor has focus: Pi's
-        // selectors use it to save defaults and toggle session sort.
-        if (isStashShortcutInput(data) || matchesCtrlSStashInput(data)) {
-          stashOrRestoreEditorText(ctx);
-          return;
         }
 
         const powerlineShortcutAction = getPowerlineShortcutAction(data);
