@@ -115,7 +115,6 @@ export interface PowerlineShortcuts {
   copyEditor: ShortcutBinding;
   cutEditor: ShortcutBinding;
   queueOpen: ShortcutBinding;
-  reply: ShortcutBinding;
   editorStart: ShortcutBinding;
   editorEnd: ShortcutBinding;
 }
@@ -126,7 +125,6 @@ type PowerlineShortcutAction =
   | { kind: "copyEditor" }
   | { kind: "cutEditor" }
   | { kind: "queueOpen" }
-  | { kind: "reply" }
   | { kind: "bashMode" };
 const STASH_HISTORY_LIMIT = 12;
 const PROJECT_PROMPT_HISTORY_LIMIT = 50;
@@ -139,7 +137,6 @@ const DEFAULT_SHORTCUTS: PowerlineShortcuts = {
   copyEditor: "ctrl+alt+c",
   cutEditor: "ctrl+alt+x",
   queueOpen: "ctrl+alt+q",
-  reply: null,
   editorStart: "super+shift+up",
   editorEnd: "super+shift+down",
 };
@@ -149,7 +146,7 @@ const DEFAULT_BASH_MODE_SETTINGS = {
   transcriptMaxLines: 2000,
   transcriptMaxBytes: 512 * 1024,
 } as const satisfies BashModeSettings;
-const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["stashHistory", "copyEditor", "cutEditor", "queueOpen", "reply", "editorStart", "editorEnd"];
+const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["stashHistory", "copyEditor", "cutEditor", "queueOpen", "editorStart", "editorEnd"];
 const APP_RESERVED_SHORTCUTS = [
   "escape",
   "ctrl+c",
@@ -2390,9 +2387,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     if (matchesConfiguredShortcut(data, resolvedShortcuts.queueOpen)) {
       return { kind: "queueOpen" };
     }
-    if (resolvedShortcuts.reply && matchesConfiguredShortcut(data, resolvedShortcuts.reply)) {
-      return { kind: "reply" };
-    }
     if (matchesConfiguredShortcut(data, bashModeSettings.toggleShortcut)) {
       return { kind: "bashMode" };
     }
@@ -2420,11 +2414,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
     if (action.kind === "queueOpen") {
       void openQueuePicker(ctx);
-      return;
-    }
-
-    if (action.kind === "reply") {
-      void import("./quote-reply.ts").then(({ reply }) => reply("", ctx));
       return;
     }
 
@@ -2519,14 +2508,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
     requestStatusRender();
     schedulePostCompactionDelivery();
-  });
-
-  pi.registerCommand("reply", {
-    description: "Quote a previous user or assistant message into the editor",
-    handler: async (args, ctx) => {
-      const { reply } = await import("./quote-reply.ts");
-      await reply(args, ctx);
-    },
   });
 
   pi.registerCommand("queue", {
