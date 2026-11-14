@@ -1,6 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_SETTINGS } from "./defaults.js";
+import { readSection, updateSection } from "./settings-store.js";
 
 export type IntegratedSettings = {
   sidebarEnabled: boolean;
@@ -10,20 +9,12 @@ export type IntegratedSettings = {
   sidebarAutoHideBelow: number;
 };
 
-export const DEFAULT_SETTINGS: IntegratedSettings = {
-  sidebarEnabled: true,
-  sidebarWidth: undefined,
-  sidebarAutoHideBelow: 100,
-};
 
-const configFile = (): string => join(getAgentDir(), "pi-pretty-stereo-view.json");
 
-type FileShape = { sidebar?: { enabled?: unknown; width?: unknown; autoHideBelowColumns?: unknown } };
 
 export function loadSettings(): IntegratedSettings {
   try {
-    const parsed = JSON.parse(readFileSync(configFile(), "utf8")) as FileShape;
-    const sidebar = parsed?.sidebar;
+    const sidebar = readSection("sidebar");
     if (!sidebar || typeof sidebar !== "object") return { ...DEFAULT_SETTINGS };
     const width = typeof sidebar.width === "number" && Number.isFinite(sidebar.width)
       ? Math.round(sidebar.width)
@@ -42,21 +33,15 @@ export function loadSettings(): IntegratedSettings {
 }
 
 export function saveSettings(settings: IntegratedSettings): void {
-  let existing: FileShape = {};
-  try {
-    const parsed = JSON.parse(readFileSync(configFile(), "utf8")) as FileShape;
-    if (parsed && typeof parsed === "object") existing = parsed;
-  } catch {
-    // A missing or broken config file is rewritten below.
-  }
-  const next: FileShape = {
-    ...existing,
-    sidebar: {
-      ...existing.sidebar,
+  updateSection("sidebar", (current) => {
+    const next = {
+      ...current,
       enabled: settings.sidebarEnabled,
       autoHideBelowColumns: settings.sidebarAutoHideBelow,
-      ...(settings.sidebarWidth === undefined ? {} : { width: settings.sidebarWidth }),
-    },
-  };
-  writeFileSync(configFile(), `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      width: settings.sidebarWidth,
+    };
+    return next;
+  });
 }
+
+export { DEFAULT_SETTINGS } from "./defaults.js";

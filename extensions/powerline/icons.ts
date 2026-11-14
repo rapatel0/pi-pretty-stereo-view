@@ -164,9 +164,8 @@ export const ASCII_SEPARATORS: SeparatorChars = {
 
 // Infer Nerd Font support from environment overrides and terminal-name heuristics.
 export function hasNerdFonts(): boolean {
-  // User can set this env var to force Nerd Fonts
-  if (process.env.POWERLINE_NERD_FONTS === "1") return true;
-  if (process.env.POWERLINE_NERD_FONTS === "0") return false;
+  const configured = (loadThemeConfig() as { nerdFonts?: unknown }).nerdFonts;
+  if (typeof configured === "boolean") return configured;
   
   // Check for Ghostty (survives into tmux via GHOSTTY_RESOURCES_DIR)
   if (process.env.GHOSTTY_RESOURCES_DIR) return true;

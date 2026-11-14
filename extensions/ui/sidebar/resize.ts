@@ -1,3 +1,6 @@
+import { installPriorityInputListener, isSidebarInputBlocked } from "../../integrated/ui-runtime.js";
+export { installPriorityInputListener, isSidebarInputBlocked } from "../../integrated/ui-runtime.js";
+import { uiScheduler, type Cancel } from "../../shared/scheduler.js";
 import type {
   Component,
   OverlayHandle,
@@ -8,12 +11,6 @@ import type {
 
 const SGR_MOUSE = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])$/;
 const PREVIEW_FRAME_INTERVAL_MS = 16;
-
-/** Capturing overlays own input; the non-capturing resize preview does not. */
-export function isSidebarInputBlocked(tui: TUI): boolean {
-  const overlays = tui as TUI & { isOverlayFocused?: () => boolean };
-  return overlays.isOverlayFocused?.() ?? tui.hasOverlay?.() ?? false;
-}
 
 export type SgrMouseEvent = {
   readonly button: number;
@@ -42,42 +39,6 @@ export class SidebarDivider implements Component {
   invalidate(): void {}
 }
 
-/**
- * Pi has no public input-listener priority API. Prefer its normal public
- * registration when internals differ, but disable gestures that strictly
- * require priority (divider dragging) to avoid conflicting with Pi.
- */
-export function installPriorityInputListener(
-  tui: TUI,
-  listener: TuiInputListener,
-  options: { requirePriority?: boolean } = {},
-): () => void {
-  const listeners = (tui as unknown as { inputListeners?: unknown }).inputListeners;
-  if (!(listeners instanceof Set)) {
-    return options.requirePriority ? () => {} : tui.addInputListener(listener);
-  }
-  const unsubscribe = tui.addInputListener(listener);
-  if (!listeners.has(listener)) {
-    if (options.requirePriority) {
-      unsubscribe();
-      return () => {};
-    }
-    return unsubscribe;
-  }
-  try {
-    const existing = [...listeners].filter((item) => item !== listener);
-    listeners.clear();
-    listeners.add(listener);
-    for (const item of existing) listeners.add(item);
-  } catch {
-    if (options.requirePriority) {
-      unsubscribe();
-      return () => {};
-    }
-  }
-  return unsubscribe;
-}
-
 export type MouseResizeOptions = {
   readonly tui: TUI;
   readonly preview: Component;
@@ -91,10 +52,10 @@ export function installMouseResize(options: MouseResizeOptions): () => void {
   let dragging = false;
   let dragColumns = 0;
   let dragRows = 0;
-  let geometryTimer: ReturnType<typeof setInterval> | undefined;
+  let geometryTimer: Cancel | undefined;
   let previewHandle: OverlayHandle | undefined;
   let pendingX: number | undefined;
-  let frameTimer: ReturnType<typeof setTimeout> | undefined;
+  let frameTimer: Cancel | undefined;
   let lastFrameAt = 0;
   let disposed = false;
   const previewOptions: OverlayOptions = {
@@ -106,7 +67,7 @@ export function installMouseResize(options: MouseResizeOptions): () => void {
   };
 
   const clearFrameTimer = (): void => {
-    if (frameTimer) clearTimeout(frameTimer);
+    if (frameTimer) frameTimer();
     frameTimer = undefined;
   };
   const hidePreview = (): void => {
@@ -117,7 +78,7 @@ export function installMouseResize(options: MouseResizeOptions): () => void {
     dragging = false;
     pendingX = undefined;
     clearFrameTimer();
-    if (geometryTimer) clearInterval(geometryTimer);
+    if (geometryTimer) geometryTimer();
     geometryTimer = undefined;
     hidePreview();
   };
@@ -136,8 +97,7 @@ export function installMouseResize(options: MouseResizeOptions): () => void {
     pendingX = x;
     if (frameTimer) return;
     const elapsed = performance.now() - lastFrameAt;
-    frameTimer = setTimeout(flushPreview, Math.max(0, PREVIEW_FRAME_INTERVAL_MS - elapsed));
-    frameTimer.unref?.();
+    frameTimer = uiScheduler.once(flushPreview, Math.max(0, PREVIEW_FRAME_INTERVAL_MS - elapsed));
   };
   const sidebarWidthAt = (x: number): number => options.clampSidebarWidth(options.tui.terminal.columns - x);
   const previewXFor = (x: number): number => options.tui.terminal.columns - sidebarWidthAt(x);
@@ -160,8 +120,7 @@ export function installMouseResize(options: MouseResizeOptions): () => void {
       dragColumns = options.tui.terminal.columns;
       dragRows = options.tui.terminal.rows;
       // Only watch geometry during a drag, including resizes with no further mouse input.
-      geometryTimer = setInterval(() => { if (!geometryValid()) cancelDrag(); }, PREVIEW_FRAME_INTERVAL_MS);
-      geometryTimer.unref?.();
+      geometryTimer = uiScheduler.repeat(() => { if (!geometryValid()) cancelDrag(); }, PREVIEW_FRAME_INTERVAL_MS);
       previewOptions.col = Math.max(0, options.getDividerX() - 1);
       try {
         previewHandle = options.tui.showOverlay(options.preview, previewOptions);

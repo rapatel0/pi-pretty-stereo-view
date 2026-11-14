@@ -1,3 +1,5 @@
+import { POWERLINE_DEFAULTS } from "../integrated/defaults.js";
+import { isRecord } from "../shared/value.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { normalizeCostCurrency } from "./currency-rates.ts";
 import { BUILTIN_STATUS_LINE_SEGMENT_IDS } from "./types.ts";
@@ -26,9 +28,6 @@ export interface PowerlineConfig {
   autoFollowUp: boolean;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizePreset(value: unknown, presets: readonly StatusLinePreset[]): StatusLinePreset | null {
   if (typeof value !== "string") return null;
@@ -37,7 +36,7 @@ function normalizePreset(value: unknown, presets: readonly StatusLinePreset[]): 
 }
 
 function normalizePlacement(value: unknown): { placement: PowerlinePlacement; invalidPlacement: string | null } {
-  if (value === undefined) return { placement: "above", invalidPlacement: null };
+  if (value === undefined) return { placement: POWERLINE_DEFAULTS.placement, invalidPlacement: null };
 
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "above" || normalized === "below") {
@@ -45,13 +44,13 @@ function normalizePlacement(value: unknown): { placement: PowerlinePlacement; in
   }
 
   return {
-    placement: "above",
+    placement: POWERLINE_DEFAULTS.placement,
     invalidPlacement: typeof value === "string" ? value.trim() : String(value),
   };
 }
 
 function normalizeSecondaryOverflow(value: unknown): { secondaryOverflow: SecondaryOverflow; invalidSecondaryOverflow: string | null } {
-  if (value === undefined) return { secondaryOverflow: "drop", invalidSecondaryOverflow: null };
+  if (value === undefined) return { secondaryOverflow: POWERLINE_DEFAULTS.secondaryOverflow, invalidSecondaryOverflow: null };
 
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "drop" || normalized === "wrap") {
@@ -59,13 +58,13 @@ function normalizeSecondaryOverflow(value: unknown): { secondaryOverflow: Second
   }
 
   return {
-    secondaryOverflow: "drop",
+    secondaryOverflow: POWERLINE_DEFAULTS.secondaryOverflow,
     invalidSecondaryOverflow: typeof value === "string" ? value.trim() : String(value),
   };
 }
 
 function normalizeWorkingIndicatorPlacement(value: unknown): { workingIndicatorPlacement: WorkingIndicatorPlacement; invalidWorkingIndicatorPlacement: string | null } {
-  if (value === undefined) return { workingIndicatorPlacement: "editor-border", invalidWorkingIndicatorPlacement: null };
+  if (value === undefined) return { workingIndicatorPlacement: POWERLINE_DEFAULTS.workingIndicatorPlacement, invalidWorkingIndicatorPlacement: null };
 
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "editor-border" || normalized === "above-powerline") {
@@ -73,7 +72,7 @@ function normalizeWorkingIndicatorPlacement(value: unknown): { workingIndicatorP
   }
 
   return {
-    workingIndicatorPlacement: "editor-border",
+    workingIndicatorPlacement: POWERLINE_DEFAULTS.workingIndicatorPlacement,
     invalidWorkingIndicatorPlacement: typeof value === "string" ? value.trim() : String(value),
   };
 }
@@ -332,25 +331,7 @@ export function mergeSegmentOptions(
 }
 
 export function parsePowerlineConfig(value: unknown, presets: readonly StatusLinePreset[]): PowerlineConfig {
-  const defaultConfig: PowerlineConfig = {
-    preset: "default",
-    customItems: [],
-    disabledSegments: [],
-    invalidDisabledSegments: [],
-    layout: null,
-    invalidLayoutSegments: [],
-    separator: null,
-    segmentOptions: {},
-    placement: "above",
-    invalidPlacement: null,
-    padding: 1,
-    secondaryOverflow: "drop",
-    invalidSecondaryOverflow: null,
-    workingIndicatorPlacement: "editor-border",
-    invalidWorkingIndicatorPlacement: null,
-    sendDelayMs: 0,
-    autoFollowUp: false,
-  };
+  const defaultConfig = structuredClone(POWERLINE_DEFAULTS);
 
   const directPreset = normalizePreset(value, presets);
   if (directPreset) return { ...defaultConfig, preset: directPreset };
@@ -384,7 +365,7 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     invalidWorkingIndicatorPlacement,
     sendDelayMs: typeof value.sendDelayMs === "number" && Number.isFinite(value.sendDelayMs) && value.sendDelayMs > 0
       ? value.sendDelayMs
-      : 0,
+      : defaultConfig.sendDelayMs,
     autoFollowUp: value.autoFollowUp === true,
   };
 }

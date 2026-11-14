@@ -23,7 +23,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node test/load-smoke.mjs && node test/editor-render-probe.mjs && node test/sidebar-wrap-probe.mjs && node test/reachability-probe.mjs && node test/config-check.mjs"
+    "test": "node test/load-smoke.mjs && node test/editor-render-probe.mjs && node test/powerline-editor-probe.mjs && node test/sidebar-wrap-probe.mjs && node test/reachability-probe.mjs && node test/config-check.mjs && node test/settings-migration-probe.mjs && node test/work-panel-probe.mjs && node test/ui-command-probe.mjs && node test/scheduler-probe.mjs && node test/runtime-interface-probe.mjs && node test/message-render-probe.mjs && node test/git-idle-probe.mjs && node test/notice-probe.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.81.0",

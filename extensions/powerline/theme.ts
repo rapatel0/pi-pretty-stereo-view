@@ -1,3 +1,7 @@
+import { DEFAULT_COLORS } from "../integrated/defaults.js";
+import { hexToAnsi } from "../shared/colors.js";
+import { isRecord } from "../shared/value.js";
+import { readSection } from "../integrated/settings-store.js";
 /**
  * Theme system for powerline-footer
  * 
@@ -7,11 +11,7 @@
  * 3. Default colors
  */
 
-import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { getAgentPath } from "./paths.ts";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { ColorScheme, ColorValue, SemanticColor, ThemeLike } from "./types.ts";
 
 export interface PowerlineThemeConfig {
@@ -20,27 +20,7 @@ export interface PowerlineThemeConfig {
 }
 
 // Default color scheme (uses pi theme colors)
-const DEFAULT_COLORS: Required<ColorScheme> = {
-  model: "#d787af",  // Pink/mauve (matching original colors.ts)
-  shellMode: "accent",
-  path: "#00afaf",  // Teal/cyan (matching original colors.ts)
-  gitDirty: "warning",
-  gitClean: "success",
-  thinking: "thinkingOff",
-  thinkingMinimal: "thinkingMinimal",
-  thinkingLow: "thinkingLow",
-  thinkingMedium: "thinkingMedium",
-  thinkingHigh: "rainbow",
-  thinkingXhigh: "rainbow",
-  thinkingMax: "rainbow",
-  context: "dim",
-  contextWarn: "warning",
-  contextError: "error",
-  cost: "text",
-  tokens: "muted",
-  separator: "dim",
-  border: "borderMuted",
-};
+
 
 // Rainbow colors for high thinking levels
 const RAINBOW_COLORS = [
@@ -50,17 +30,9 @@ const RAINBOW_COLORS = [
 
 // Cache for user theme overrides
 let userThemeCache: ColorScheme | null = null;
-let userThemeCacheTime = 0;
 let userThemeCacheKey = "";
-let themeConfigCache: PowerlineThemeConfig | null = null;
-let themeConfigCacheTime = 0;
-let themeConfigCacheKey = "";
-const CACHE_TTL = 5000; // 5 seconds
 const warnedInvalidThemeColors = new Set<string>();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function sanitizeUserThemeOverrides(value: unknown): ColorScheme {
   if (!isRecord(value)) {
@@ -87,60 +59,17 @@ function sanitizeUserThemeOverrides(value: unknown): ColorScheme {
   return sanitized;
 }
 
-/**
- * Get theme.json lookup paths.
- */
-function getThemePaths(): string[] {
-  const extDir = dirname(fileURLToPath(import.meta.url));
-  return Array.from(new Set([
-    getAgentPath("extensions", "powerline-footer", "theme.json"),
-    join(extDir, "theme.json"),
-  ]));
-}
-
-/**
- * Load user theme config from theme.json.
- */
 export function loadThemeConfig(): PowerlineThemeConfig {
-  const now = Date.now();
-  const themePaths = getThemePaths();
-  const cacheKey = themePaths.join("\0");
-  if (themeConfigCache && themeConfigCacheKey === cacheKey && now - themeConfigCacheTime < CACHE_TTL) {
-    return themeConfigCache;
-  }
-
-  for (const themePath of themePaths) {
-    try {
-      if (existsSync(themePath)) {
-        const content = readFileSync(themePath, "utf-8");
-        const parsed = JSON.parse(content);
-        themeConfigCache = isRecord(parsed) ? parsed : {};
-        themeConfigCacheTime = now;
-        themeConfigCacheKey = cacheKey;
-        return themeConfigCache;
-      }
-    } catch (error) {
-      // Theme overrides are optional. If the file is unreadable or malformed,
-      // keep rendering with built-in defaults instead of breaking the footer.
-      console.debug(`[powerline-theme] Failed to load ${themePath}:`, error);
-    }
-  }
-
-  themeConfigCache = {};
-  themeConfigCacheTime = now;
-  themeConfigCacheKey = cacheKey;
-  return themeConfigCache;
+  return readSection("powerlineTheme");
 }
 
 function loadUserTheme(): ColorScheme {
-  const now = Date.now();
-  const cacheKey = getThemePaths().join("\0");
-  if (userThemeCache && userThemeCacheKey === cacheKey && now - userThemeCacheTime < CACHE_TTL) {
+  const cacheKey = JSON.stringify(loadThemeConfig().colors);
+  if (userThemeCache && userThemeCacheKey === cacheKey) {
     return userThemeCache;
   }
 
   userThemeCache = sanitizeUserThemeOverrides(loadThemeConfig().colors);
-  userThemeCacheTime = now;
   userThemeCacheKey = cacheKey;
   return userThemeCache;
 }
@@ -170,14 +99,6 @@ function isHexColor(color: ColorValue): color is `#${string}` {
 /**
  * Convert hex color to ANSI escape code
  */
-function hexToAnsi(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
-
 /**
  * Apply a color to text using the pi theme or custom hex
  */

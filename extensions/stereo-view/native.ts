@@ -5,7 +5,7 @@ import { highlightSearchRows, searchHitRow, type SearchClock } from "./search-hi
 import { CompactMessage, type TranscriptTimestamps } from "./timestamps.js";
 import { NativeContentIndex, type ContentEntry, type Pane } from "./content.js";
 import { CompactTool } from "./compact-tools.js";
-import { toolPresentations, type ToolPresentation } from "./tool-presentation.js";
+import { toolPresentations, type ToolPresentation } from "../shared/tool-presentation.js";
 import { toolGroups, groupSummary, type ToolGroup } from "./tool-groups.js";
 export type { Pane } from "./content.js";
 

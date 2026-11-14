@@ -1,9 +1,10 @@
+import { readSection } from "../integrated/settings-store.js";
+
 export interface EditorPerfOptions {
   enabled: boolean;
   fastRender: boolean;
   editorChrome: boolean;
   widgets: boolean;
-  bashWidgets: boolean;
   lastPrompt: boolean;
 }
 
@@ -13,17 +14,14 @@ interface EditorPerfMetric {
   maxMs: number;
 }
 
-export function readEditorPerfOptions(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): EditorPerfOptions {
-  const enabled = env.POWERLINE_DEBUG_PERF === "1";
+export function readEditorPerfOptions(): EditorPerfOptions {
+  const saved = readSection("diagnostics");
   return {
-    enabled,
-    fastRender: !enabled || env.POWERLINE_PERF_FAST_RENDER !== "0",
-    editorChrome: !enabled || env.POWERLINE_PERF_EDITOR_CHROME !== "0",
-    widgets: !enabled || env.POWERLINE_PERF_WIDGETS !== "0",
-    bashWidgets: !enabled || env.POWERLINE_PERF_BASH_WIDGETS !== "0",
-    lastPrompt: !enabled || env.POWERLINE_PERF_LAST_PROMPT !== "0",
+    enabled: saved.enabled === true,
+    fastRender: saved.fastRender !== false,
+    editorChrome: saved.editorChrome !== false,
+    widgets: saved.widgets !== false,
+    lastPrompt: saved.lastPrompt !== false,
   };
 }
 
@@ -76,7 +74,7 @@ export class EditorPerfProfiler {
     const renderCount = this.metrics.get("editor.render.total")?.count ?? 0;
     const lines = [
       `Powerline editor perf (${((Date.now() - this.startedAt) / 1000).toFixed(1)}s)`,
-      `A/B: fast-render=${this.options.fastRender ? "on" : "off"}, editor-chrome=${this.options.editorChrome ? "on" : "off"}, widgets=${this.options.widgets ? "on" : "off"}, bash-widgets=${this.options.bashWidgets ? "on" : "off"}, last-prompt=${this.options.lastPrompt ? "on" : "off"}`,
+      `A/B: fast-render=${this.options.fastRender ? "on" : "off"}, editor-chrome=${this.options.editorChrome ? "on" : "off"}, widgets=${this.options.widgets ? "on" : "off"}, last-prompt=${this.options.lastPrompt ? "on" : "off"}`,
       `inputs=${inputCount}, editor-renders=${renderCount}, renders/input=${inputCount > 0 ? (renderCount / inputCount).toFixed(2) : "0.00"}, max-draft=${this.maxDraftChars}`,
     ];
 

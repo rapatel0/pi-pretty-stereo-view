@@ -5,7 +5,7 @@
 import { agentEnv } from "./harness.mjs";
 
 const { jiti, url } = agentEnv({ "transcript.json": "{}" }, "ppsv-wrap-");
-const bridges = await jiti.import(url("../extensions/integrated/bridges.ts"));
+const bridges = await jiti.import(url("../extensions/integrated/ui-runtime.ts"));
 const { TranscriptLayout } = await jiti.import(url("../extensions/stereo-view/layout.ts"));
 const { defaults } = await jiti.import(url("../extensions/stereo-view/preferences.ts"));
 

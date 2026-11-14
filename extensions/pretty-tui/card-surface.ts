@@ -1,9 +1,8 @@
+import { RenderMemo } from "../shared/render-cache.js";
 import { colorToOklch, oklchColor, type Color } from "@earendil-works/pi-tui";
 
 type Surface = { prefix: string; signature: string; paint: (text: string) => string };
-const surfaces = new WeakMap<object, Map<string, {
-  source: Color; appearance: string; mode: unknown; style: unknown; surface: Surface;
-}>>();
+const surfaces = new RenderMemo<Surface>();
 
 const brush = (sample: string): Surface => {
   const at = sample.indexOf("\u0000");
@@ -20,12 +19,9 @@ export function cardSurface(theme: any, borderRole?: string, fallback = "toolPen
   }
   const appearance = theme.appearance === "light" ? "light" : "dark";
   const mode = theme.getColorMode?.();
-  const entries = surfaces.get(theme) ?? new Map();
-  surfaces.set(theme, entries);
-  const cached = entries.get(borderRole!);
-  if (cached && cached.source === source && cached.appearance === appearance && cached.mode === mode && cached.style === theme.style) {
-    return cached.surface;
-  }
+  const inputs = [source, appearance, mode, theme.style];
+  const cached = surfaces.read(theme, inputs, borderRole!);
+  if (cached) return cached;
   const { l, c, h } = colorToOklch(source);
   // Dark themes get deep tinted panels; light themes keep a pale tint so
   // their native dark foreground remains readable. No fixed RGB palette.
@@ -33,6 +29,6 @@ export function cardSurface(theme: any, borderRole?: string, fallback = "toolPen
     ? oklchColor(Math.min(0.24, l * 0.28), Math.min(0.06, c * 0.35), h)
     : oklchColor(1 - (1 - l) * 0.12, Math.min(0.035, c * 0.25), h);
   const surface = brush(theme.style("\u0000", { bg: color }));
-  entries.set(borderRole!, { source, appearance, mode, style: theme.style, surface });
+  surfaces.write(theme, inputs, surface, borderRole!);
   return surface;
 }

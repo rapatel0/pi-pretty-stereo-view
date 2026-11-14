@@ -1,6 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { getAgentPath } from "./paths.ts";
+import { isRecord } from "../shared/value.js";
+import { readSettings, updateSettings } from "../integrated/settings-store.js";
 
 export const SUPPORTED_COST_CURRENCIES = ["USD", "CNY", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "INR", "KRW"] as const;
 export type CostCurrencyCode = typeof SUPPORTED_COST_CURRENCIES[number];
@@ -20,7 +19,6 @@ const CURRENCY_SYMBOLS: Record<CostCurrencyCode, string> = {
 
 const RATE_TTL_MS = 24 * 60 * 60 * 1000;
 const RATE_URL = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.min.json";
-const RATE_CACHE_PATH = getAgentPath("powerline-footer", "currency-rates.json");
 
 type RateTable = Partial<Record<CostCurrencyCode, number>>;
 
@@ -32,9 +30,6 @@ interface CachedRates {
 let cachedRates: CachedRates | null = null;
 let pendingFetch: Promise<void> | null = null;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 export function normalizeCostCurrency(value: unknown): CostCurrencyCode | undefined {
   if (typeof value !== "string") return undefined;
@@ -58,7 +53,7 @@ function parseCachedRates(value: unknown): CachedRates | null {
 
 async function readCachedRatesFromDisk(): Promise<CachedRates | null> {
   try {
-    return parseCachedRates(JSON.parse(await readFile(RATE_CACHE_PATH, "utf8")));
+    return parseCachedRates(readSettings().currencyRates);
   } catch {
     return null;
   }
@@ -66,8 +61,7 @@ async function readCachedRatesFromDisk(): Promise<CachedRates | null> {
 
 async function writeCachedRatesToDisk(rates: CachedRates): Promise<void> {
   try {
-    await mkdir(dirname(RATE_CACHE_PATH), { recursive: true });
-    await writeFile(RATE_CACHE_PATH, JSON.stringify(rates));
+    updateSettings((plane) => ({ ...plane, currencyRates: rates }));
   } catch {
     // The footer can still use in-memory rates when the cache file is unavailable.
   }

@@ -1,8 +1,6 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import path from "node:path";
+import { STEREO_DEFAULTS as defaults } from "../integrated/defaults.js";
+import { readSection, updateSection } from "../integrated/settings-store.js";
 
-/** Display state; mode and zoom are session-only, while arrangement and display choices are saved. */
 export interface Preferences {
   mode: "split" | "combined";
   /** Left means first: left in columns, top in rows. */
@@ -18,20 +16,12 @@ export interface Preferences {
   compactTools: boolean;
 }
 
-export const defaults: Preferences = {
-  mode: "split", side: "left", chatWidth: null, layout: "columns", chatHeight: null, zoom: null, showTimestamps: true, showCopyButtons: true, compactTools: false,
-};
+
 
 /** Read display preferences, retaining the first version's saved arrangement. */
-export async function loadPreferences(file: string): Promise<Preferences> {
-  let value: unknown;
-  try {
-    value = JSON.parse(await readFile(file, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...defaults };
-    throw error;
-  }
-  if (!value || typeof value !== "object") throw new Error("Invalid pi-stereo-view preferences");
+export async function loadPreferences(): Promise<Preferences> {
+  const value = readSection("stereo");
+  if (Object.keys(value).length === 0) return { ...defaults };
   const record = value as Record<string, unknown>;
   // The first version only had columns; keep that saved arrangement.
   const layout = record.layout === undefined ? "columns" : record.layout;
@@ -52,15 +42,11 @@ export async function loadPreferences(file: string): Promise<Preferences> {
 }
 
 /** Atomically save only the display settings, never session messages. */
-export async function savePreferences(file: string, preferences: Preferences): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = file + "." + randomUUID() + ".tmp";
-  try {
-    const { side, chatWidth, layout, chatHeight, showTimestamps, showCopyButtons, compactTools } = preferences;
-    const saved = { side, chatWidth, layout, chatHeight, showTimestamps, showCopyButtons, compactTools };
-    await writeFile(temporary, JSON.stringify(saved, null, 2) + "\n", { mode: 0o600 });
-    await rename(temporary, file);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+export async function savePreferences(preferences: Preferences): Promise<void> {
+  const { side, chatWidth, layout, chatHeight, showTimestamps, showCopyButtons, compactTools } = preferences;
+  updateSection("stereo", (current) => ({
+    ...current, side, chatWidth, layout, chatHeight, showTimestamps, showCopyButtons, compactTools,
+  }));
 }
+
+export { STEREO_DEFAULTS as defaults } from "../integrated/defaults.js";

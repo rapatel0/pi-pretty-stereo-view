@@ -1,25 +1,28 @@
-import { estimateTokens, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { WorkState, connectSubagentEvents, type WorkKind } from "../ui/work/state.js";
+import { WorkPanel } from "../ui/work/panel.js";
+import { openWorkOutput } from "../ui/work/output.js";
+import { readSettings, updateSettings } from "./settings-store.js";
+import { estimateTokens, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ScrollView, Text } from "@earendil-works/pi-tui";
 import { installSidebar, type SidebarController } from "../ui/sidebar/index.js";
-import { createDefaultSidebarPanels, SESSION_PANEL_ID } from "../ui/sidebar/default-panels.js";
-import type { SessionListItem } from "../ui/session/panel.js";
-import { createSessionCatalog } from "../ui/session/catalog.js";
-import { deleteSessionFile } from "../ui/session/mutations.js";
+import { createDefaultSidebarPanels } from "../ui/sidebar/default-panels.js";
 import { installContextEstimates } from "../ui/ctx/data.js";
 import { createActivityTracker, createStreamingTokenSampler, type ActivityTracker } from "../ui/ctx/activity.js";
 import { createToolUsageTracker, type ToolUsageTracker } from "../ui/tool-view/usage.js";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./config.js";
-import { isStereoAttached, onStereoAttached, onStereoDetaching } from "./bridges.js";
+import { isStereoAttached, onStereoAttached, onStereoDetaching } from "./ui-runtime.js";
 
 type UsageLike = { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown; output?: unknown };
 
-const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
  * Right-side sidebar (sessions, context, tool usage) from pi-ui-extension,
  * mounted over whatever layout the stereo split owns and fully toggleable.
  */
 export type SidebarControls = {
+  isPanelEnabled(kind: WorkKind): boolean;
+  setPanelEnabled(kind: WorkKind, on: boolean): void;
+  runCommand(args: string, ctx: any): Promise<void>;
   statusLine(): string;
   isEnabled(): boolean;
   setEnabled(on: boolean): void;
@@ -39,7 +42,6 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   let activity: ActivityTracker | undefined;
   let toolUsage: ToolUsageTracker | undefined;
   let pendingAttachSubscription: (() => void) | undefined;
-  let switchRequested = false;
   let fullscreenWarningShown = false;
   let reinstallRef: (() => void) | undefined;
   let evaluateWidthRef: ((columns: number) => void) | undefined;
@@ -62,8 +64,14 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   const wideEnough = (columns: number): boolean => autoHideBelow <= 0 || columns >= autoHideBelow;
 
   const refresh = (): void => controller?.refresh();
-  const refreshSessions = (): void => {
-    controller?.updatePanel(SESSION_PANEL_ID, undefined) ?? refresh();
+  const work = new WorkState();
+  work.subscribe(refresh);
+  let disconnectWork = () => {};
+  const workInputs = new Map<string, unknown>();
+  const workSettings = readSettings();
+  const panelsEnabled = {
+    subagent: workSettings.subagentPanelEnabled !== false,
+    process: workSettings.processPanelEnabled !== false,
   };
 
   // --- Context / activity / usage state backing the panels -----------------
@@ -111,85 +119,6 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   };
   const currentBranch = (ctx: ExtensionContext): readonly unknown[] => ctx.sessionManager.getBranch();
 
-  // --- Sessions panel providers --------------------------------------------
-  const sessionCatalog = createSessionCatalog();
-  const rowPaths = new Map<string, string>();
-  const loadRows = async (ctx: ExtensionContext): Promise<readonly SessionListItem[]> => {
-    const currentId = ctx.sessionManager.getSessionId();
-    const summaries = await sessionCatalog(ctx.cwd, ctx.sessionManager.getSessionDir());
-    rowPaths.clear();
-    for (const summary of summaries) rowPaths.set(summary.id, summary.path);
-    return summaries
-      .map((summary) => ({
-        id: summary.id,
-        title: summary.name ?? summary.firstMessage,
-        modified: summary.modified,
-        userPromptCount: summary.userPromptCount,
-        current: summary.id === currentId,
-      }))
-      .sort((a, b) => b.modified.getTime() - a.modified.getTime());
-  };
-
-  const switchToSession = (ctx: ExtensionContext, session: SessionListItem): void => {
-    if (session.current || switchRequested) return;
-    if (!ctx.isIdle()) {
-      ctx.ui.notify("Wait for the current run to finish before switching sessions", "warning");
-      return;
-    }
-    if (!rowPaths.has(session.id)) {
-      refreshSessions();
-      return;
-    }
-    switchRequested = true;
-    // switchSession lives on command contexts; route through a hidden
-    // command the way upstream pi-ui-extension does.
-    pi.sendUserMessage(`/sidebar-session switch ${session.id}`, { expandPromptTemplates: true });
-  };
-
-  const renameSession = async (ctx: ExtensionContext, session: SessionListItem): Promise<void> => {
-    const path = rowPaths.get(session.id);
-    if (!path) {
-      refreshSessions();
-      return;
-    }
-    const nextName = await ctx.ui.input("Rename session", session.title);
-    const next = nextName?.trim();
-    if (!next) return;
-    try {
-      if (session.current) pi.setSessionName(next);
-      else {
-        SessionManager.open(path).appendSessionInfo(next);
-        refreshSessions();
-      }
-      ctx.ui.notify("Session renamed", "info");
-    } catch (error) {
-      ctx.ui.notify(`Failed to rename session: ${errorMessage(error)}`, "error");
-    }
-  };
-
-  const deleteSession = async (ctx: ExtensionContext, session: SessionListItem): Promise<void> => {
-    if (session.current) {
-      ctx.ui.notify("Cannot delete the currently active session", "warning");
-      return;
-    }
-    if (!ctx.isIdle()) {
-      ctx.ui.notify("Wait for the current run to finish before deleting sessions", "warning");
-      return;
-    }
-    const path = rowPaths.get(session.id);
-    if (!path) {
-      refreshSessions();
-      return;
-    }
-    const confirmed = await ctx.ui.confirm("Delete session", `Move “${session.title}” to trash?`);
-    if (!confirmed) return;
-    if (!ctx.isIdle() || session.current) return;
-    const result = await deleteSessionFile(pi, path);
-    if (result.ok) ctx.ui.notify("Session moved to trash", "info");
-    else ctx.ui.notify(`Failed to delete session: ${result.error}`, "error");
-    refreshSessions();
-  };
-
   // --- Mount / dispose ------------------------------------------------------
   const teardownController = (): void => {
     if (!controller) return;
@@ -215,7 +144,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
       finish = done;
       const install = (): void => {
         if (controller) return;
-        const panels = createDefaultSidebarPanels({
+        const panels = [...createDefaultSidebarPanels({
           getContextUsage: () => ctx.getContextUsage(),
           getContextEstimate: () => contextEstimates.getSnapshot(),
           getContextDelta: () => contextEstimates.getDelta(),
@@ -228,17 +157,15 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
           onSelectToolViewMode: () => {
             ctx.ui.notify("Tool view modes come from pi-ui-extension's tool controller, not this bundle", "info");
           },
-          loadSessions: () => loadRows(ctx),
-          onSelectSession: (session) => switchToSession(ctx, session),
-          onRenameSession: (session) => void renameSession(ctx, session),
-          onDeleteSession: (session) => void deleteSession(ctx, session),
-          onDeleteOthers: () => {
-            ctx.ui.notify("Bulk session cleanup is not part of this bundle", "info");
-          },
-          onOpenResources: () => {
-            ctx.ui.notify("Resource browsing is not part of this bundle", "info");
-          },
-        });
+        }), ...(["subagent", "process"] as const).filter((kind) => panelsEnabled[kind]).map((kind) => ({
+          id: kind,
+          layout: { minSize: 3, maxSize: 10 },
+          create: () => ({
+            component: new ScrollView(new WorkPanel(theme, work, kind, (item) => {
+              void openWorkOutput(ctx, work, item).catch((error) => ctx.ui.notify(String(error), "error"));
+            }), { scrollbar: "hidden", follow: "none" }),
+          }),
+        }))];
         const next = installSidebar(tui, theme, panels, {
           ...(width === undefined ? {} : { initialWidth: width }),
           onWidthChange: (liveWidth) => {
@@ -348,7 +275,10 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   // --- Lifecycle ------------------------------------------------------------
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx;
-    switchRequested = false;
+    disconnectWork();
+    workInputs.clear();
+    work.rebuild(currentBranch(ctx));
+    disconnectWork = connectSubagentEvents(pi, work);
     // A reload may start without session_shutdown; release the old layout and
     // listeners while their original context is still valid.
     disposeSidebar();
@@ -363,6 +293,9 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   });
 
   pi.on("session_shutdown", () => {
+    disconnectWork();
+    work.clear();
+    workInputs.clear();
     disposeSidebar();
     activity?.reset();
     activity = undefined;
@@ -400,17 +333,20 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
     refresh();
   });
   pi.on("tool_execution_start", (event) => {
+    workInputs.set(event.toolCallId, event.args);
     activity?.startTool(event);
     refresh();
   });
   pi.on("tool_execution_end", (event) => {
+    work.observeTool(event.toolName, { ...event.result, isError: event.isError }, workInputs.get(event.toolCallId));
+    workInputs.delete(event.toolCallId);
     activity?.finishTool(event);
     toolUsage?.record(event);
     refresh();
   });
   pi.on("agent_settled", (event) => {
     activity?.settle(undefined, (event as { aborted?: boolean }).aborted === true);
-    refreshSessions();
+    refresh();
   });
   pi.on("turn_end", (event) => {
     activity?.finishTurn(event.turnIndex);
@@ -419,44 +355,19 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   pi.on("session_tree", () => {
     if (lastCtx) {
       const branch = currentBranch(lastCtx);
+      work.rebuild(branch);
       resetCacheUsage(branch);
       toolUsage?.resetSession(branch, mcpServerNames());
     }
-    refreshSessions();
+    refresh();
   });
-  pi.on("session_info_changed", refreshSessions);
+  pi.on("session_info_changed", refresh);
   pi.on("model_select", refresh);
   pi.on("thinking_level_select", refresh);
 
   // --- Controls ---------------------------------------------------------------
-  pi.registerCommand("sidebar-session", {
-    description: "Sidebar session action: /sidebar-session switch <id>",
-    handler: async (args, ctx) => {
-      const [verb = "", id = ""] = (args ?? "").trim().split(/\s+/);
-      if (verb !== "switch") return;
-      const path = rowPaths.get(id);
-      if (!path) {
-        switchRequested = false;
-        ctx.ui.notify("Session no longer exists", "error");
-        refreshSessions();
-        return;
-      }
-      try {
-        const result = await ctx.switchSession(path);
-        if (result.cancelled) {
-          switchRequested = false;
-          ctx.ui.notify("Session switch cancelled", "info");
-        }
-        // A successful switch starts a new session, which clears the guard.
-      } catch (error) {
-        switchRequested = false;
-        ctx.ui.notify(`Failed to switch session: ${errorMessage(error)}`, "error");
-      }
-    },
-  });
-  pi.registerCommand("sidebar", {
-    description: "Toggle the right sidebar: /sidebar [on|off|toggle|width <columns>]",
-    handler: async (args, ctx) => {
+
+  const runSidebarCommand = async (args, ctx) => {
       const action = (args ?? "").trim().toLowerCase();
       const [verb = "toggle", amount] = action.split(/\s+/);
       if (verb === "toggle") setEnabled(!enabled);
@@ -494,14 +405,22 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
       } else {
         ctx.ui.notify("Usage: /sidebar [on|off|toggle|width <columns>|autohide [n|off|default]|status]", "warning");
       }
-    },
-  });
+    };
   pi.registerShortcut("ctrl+alt+b", {
     description: "Toggle the right sidebar",
     handler: async () => setEnabled(!enabled),
   });
 
   return {
+    isPanelEnabled: (kind) => panelsEnabled[kind],
+    setPanelEnabled: (kind, on) => {
+      panelsEnabled[kind] = on;
+      updateSettings((plane) => ({ ...plane, [kind === "subagent" ? "subagentPanelEnabled" : "processPanelEnabled"]: on }));
+      teardownController();
+      if (reinstallRef) reinstallRef();
+      else if (lastCtx) void mountSidebar(lastCtx);
+    },
+    runCommand: runSidebarCommand,
     statusLine: () => `${enabled ? "on" : "off"} · width ${width ?? "auto"} · ${autoHideBelow === 0 ? "auto-hide off" : `auto-hide below ${autoHideBelow} cols`}${hiddenByWidth ? " · hidden now" : ""}`,
     isEnabled: () => enabled,
     setEnabled,

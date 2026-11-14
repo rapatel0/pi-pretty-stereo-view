@@ -1,5 +1,6 @@
 import { Container, Markdown, Text, stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
 import { searchText, type SearchEntry } from "./search.js";
+import { getAssistantPaneProjection } from "../integrated/ui-runtime.js";
 
 export type Pane = "activity" | "chat";
 export type ContentKind = "dialogue" | "system" | "thinking" | "tool" | "shell";
@@ -25,7 +26,7 @@ interface NativeContent extends Component {
 interface NativeAssistant extends Container {
   contentContainer: Container;
   hasToolCalls: boolean;
-  lastMessage?: { content: { type: string; text?: string; thinking?: string }[] };
+  lastMessage?: { content: { type: string; text?: string; thinking?: string }[]; stopReason?: string };
   contentIsStale?: boolean;
   buildContent?(message: NonNullable<NativeAssistant["lastMessage"]>): void;
   setHideThinkingBlock(hidden: boolean): void;
@@ -126,7 +127,10 @@ export class NativeContentIndex {
       const metadata = component as NativeContent;
       signature.push(metadata.toolCallId, metadata.entry?.data?.parentToolCallId, metadata.message?.details?.parentToolCallId);
       const native = assistant(component);
-      if (native) signature.push(native.lastMessage, ...native.contentContainer.children);
+      if (native) {
+        const projection = getAssistantPaneProjection(native);
+        signature.push(native.lastMessage, ...native.contentContainer.children, projection?.revision, projection?.activity, projection?.chat);
+      }
     }
     if (signature.length === this.signature.length && signature.every((value, index) => value === this.signature[index])) return;
     const owners = new Map<string, NativeContent>();
@@ -208,6 +212,18 @@ export class NativeContentIndex {
   }
 
   private assistantEntries(source: NativeAssistant, spacing: Component[]): ContentEntry[] {
+    const projection = getAssistantPaneProjection(source);
+    if (projection) {
+      const entries: ContentEntry[] = [{
+        source, owner: source, component: projection.activity, kind: "thinking", spacing, compact: true,
+        search: () => ({ label: "Thinking", text: projection.thinking, reveal: projection.reveal }),
+      }];
+      if (projection.chat) entries.push({
+        source, owner: source, component: projection.chat, kind: "dialogue", spacing, compact: true,
+        search: () => ({ label: "Assistant", text: projection.text }),
+      });
+      return entries;
+    }
     // Native rendering creates one child per visible text block or consecutive thinking run.
     // Match those children to semantic content before projecting; a Text diagnostic is not thinking.
     const runs: ContentKind[] = [];
@@ -219,6 +235,11 @@ export class NativeContentIndex {
         thinking = false;
         if (block.type === "text" && block.text?.trim()) runs.push("dialogue");
       }
+    }
+    // The transcript renderer supplies terminal alerts outside the native child tree.
+    // Keep that owner even when a failed request produced no text or thinking.
+    if (!runs.length && ["error", "aborted", "length"].includes(source.lastMessage?.stopReason ?? "")) {
+      return [this.entry(source, "system", spacing, true)];
     }
     const groups: Record<Pane, Component[]> = { chat: [], activity: [] };
     const diagnostics: Component[] = [];

@@ -1,20 +1,21 @@
+import { uiScheduler, type Cancel } from "../shared/scheduler.js";
 export interface RenderScheduler {
   schedule(delayMs?: number): void;
   cancel(): void;
 }
 
 export function createRenderScheduler(render: () => void, defaultDelayMs: number): RenderScheduler {
-  let pending: { timer: ReturnType<typeof setTimeout>; deadline: number } | null = null;
+  let pending: { timer: Cancel; deadline: number } | null = null;
 
   return {
     schedule(delayMs = defaultDelayMs) {
       const deadline = Date.now() + delayMs;
       if (pending) {
         if (deadline >= pending.deadline) return;
-        clearTimeout(pending.timer);
+        pending.timer();
       }
 
-      const timer = setTimeout(() => {
+      const timer = uiScheduler.once(() => {
         pending = null;
         render();
       }, delayMs);
@@ -22,7 +23,7 @@ export function createRenderScheduler(render: () => void, defaultDelayMs: number
     },
     cancel() {
       if (!pending) return;
-      clearTimeout(pending.timer);
+      pending.timer();
       pending = null;
     },
   };

@@ -1,11 +1,12 @@
-import path from "node:path";
-import { copyToClipboard, getAgentDir, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Container, isKeyRelease, isViewportTUI, matchesKey, SettingsList, Text, type TUI } from "@earendil-works/pi-tui";
+import { matchesKey } from "../shared/keys.js";
+import { readSettings, updateSettings } from "../integrated/settings-store.js";
+import { copyToClipboard, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Container, isKeyRelease, isViewportTUI, SettingsList, Text, type TUI } from "@earendil-works/pi-tui";
 import { TranscriptLayout } from "./layout.js";
 import { TOOL_START_ENTRY, TranscriptTimestamps } from "./timestamps.js";
 import { defaults, loadPreferences, savePreferences, type Preferences } from "./preferences.js";
 import { beforeFirstFrame } from "./startup.js";
-import { markStereoAttached, markStereoDetaching, setStereoBridge } from "../integrated/bridges.js";
+import { subscribeTerminalInput, getLayoutRoot, markStereoAttached, markStereoDetaching, setStereoBridge } from "../integrated/ui-runtime.js";
 
 /** Split native fullscreen history without changing message content or the input dock. */
 export default async function transcript(pi: ExtensionAPI): Promise<void> {
@@ -15,10 +16,12 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   let unsubscribeInput: (() => void) | undefined;
   let writes = Promise.resolve();
   let preferences: Preferences = { ...defaults };
-  const file = path.join(getAgentDir(), "transcript.json");
   let preferenceWarning: string | undefined;
   const readPreferences = async (): Promise<void> => {
-    try { preferences = await loadPreferences(file); }
+    try {
+      preferences = await loadPreferences();
+      preferences.mode = readSettings().splitEnabled === false ? "combined" : "split";
+    }
     catch (error) {
       preferences = { ...defaults };
       preferenceWarning = `Could not read pi-stereo-view preferences; using defaults: ${String(error)}`;
@@ -91,7 +94,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
     // re-acquire the live TUI through a throwaway invisible overlay; the
     // attach bridge lets the sidebar remount onto the new TUI as well.
     // SAFETY: isViewportTUI guards the cast; fullscreen TUIs expose layoutRoot.
-    if (host && isViewportTUI(host) && (host as { layoutRoot?: unknown }).layoutRoot === undefined &&
+    if (host && isViewportTUI(host) && getLayoutRoot(host as { layoutRoot?: unknown }) === undefined &&
       lastSessionCtx && !rebinding) {
       const ctx = lastSessionCtx;
       rebinding = true;
@@ -114,7 +117,8 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   };
   const persist = (ui: ExtensionContext["ui"]): void => {
     const snapshot = { ...preferences };
-    writes = writes.then(() => savePreferences(file, snapshot)).catch(error => {
+    updateSettings((plane) => ({ ...plane, splitEnabled: snapshot.mode === "split" }));
+    writes = writes.then(() => savePreferences(snapshot)).catch(error => {
       ui.notify(`Could not save pi-stereo-view preferences: ${String(error)}`, "error");
     });
   };
@@ -185,7 +189,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
       overlayOptions: { visible: () => false, nonCapturing: true },
       onHandle: () => finish(),
     });
-    unsubscribeInput = ctx.ui.onTerminalInput(data => {
+    unsubscribeInput = subscribeTerminalInput(ctx.ui, data => {
       ensureLayout();
       const pane = layout?.searchPane();
       if (pane && !settingsOpen && matchesKey(data, "ctrl+f")) {
@@ -235,9 +239,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
     layout?.toggle();
     ensureLayout();
   };
-  pi.registerCommand("stereo-view", {
-    description: "History: copy, settings, toggle, swap, layout <columns|rows>, zoom <chat|activity>, width, height, scroll",
-    handler: async (args, ctx) => {
+  const runStereoCommand = async (args, ctx) => {
       if (ctx.mode !== "tui" || !layout) {
         ctx.ui.notify("pi-stereo-view layout is available only in interactive Pi.", "warning");
         return;
@@ -270,8 +272,7 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
       }
       ensureLayout();
       await writes;
-    },
-  });
+    };
   pi.registerShortcut("ctrl+alt+t", { description: "Toggle split history", handler: async () => toggle() });
   pi.registerShortcut("ctrl+alt+s", { description: "Swap stereo-view panels", handler: async () => layout?.swap() });
   for (const key of ["ctrl+alt+up", "ctrl+alt+down"] as const) {
@@ -287,6 +288,15 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
   } });
 
   setStereoBridge({
+    enabled: () => preferences.mode === "split",
+    setEnabled: (on) => {
+      if ((preferences.mode === "split") !== on) {
+        if (layout) toggle();
+        else preferences.mode = on ? "split" : "combined";
+      }
+      updateSettings((plane) => ({ ...plane, splitEnabled: on }));
+    },
+    runCommand: runStereoCommand,
     statusLine: () => {
       const size = preferences.layout === "rows" ? `height ${preferences.chatHeight ?? "auto"}` : `width ${preferences.chatWidth ?? "auto"}`;
       return `${preferences.mode}, chat ${preferences.side}, ${preferences.layout}, ${size}, timestamps ${preferences.showTimestamps ? "on" : "off"}`;

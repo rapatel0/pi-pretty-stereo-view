@@ -8,7 +8,6 @@ export type ThemeLike = Pick<Theme, "fg">;
 // Semantic color names for segments
 export type SemanticColor =
   | "model"
-  | "shellMode"
   | "path"
   | "gitDirty"
   | "gitClean"
@@ -22,6 +21,9 @@ export type SemanticColor =
   | "context"
   | "contextWarn"
   | "contextError"
+  | "noticeInfo"
+  | "noticeWarn"
+  | "noticeError"
   | "cost"
   | "tokens"
   | "separator"
@@ -33,7 +35,6 @@ export type ColorScheme = Partial<Record<SemanticColor, ColorValue>>;
 // Built-in segment identifiers
 export const BUILTIN_STATUS_LINE_SEGMENT_IDS = [
   "model",
-  "shell_mode",
   "path",
   "git",
   "subagents",
@@ -51,6 +52,7 @@ export const BUILTIN_STATUS_LINE_SEGMENT_IDS = [
   "cache_write",
   "thinking",
   "extension_statuses",
+  "notices",
 ] as const;
 
 export type BuiltinStatusLineSegmentId = typeof BUILTIN_STATUS_LINE_SEGMENT_IDS[number];
@@ -106,6 +108,7 @@ export interface StatusLineSegmentOptions {
   cost?: { subscriptionDisplay?: "subscription" | "reported-cost" | "both"; currency?: CostCurrencyCode };
   context?: { format?: "full" | "percent" };
   cache_read?: { format?: "tokens" | "percent" | "both" };
+  notices?: { showSource?: boolean };
 }
 
 export type CustomItemPosition = "left" | "right" | "secondary";
@@ -196,10 +199,6 @@ export interface SegmentContext {
   customCompactionEnabled: boolean;
   usingSubscription: boolean;
   sessionStartTime: number;
-  shellModeActive: boolean;
-  shellRunning: boolean;
-  shellName: string | null;
-  shellCwd: string | null;
   
   // Git
   git: GitStatus;

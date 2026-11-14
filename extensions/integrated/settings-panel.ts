@@ -1,34 +1,71 @@
+import { readSettings, updateSection, updateSettings } from "./settings-store.js";
 /**
- * `/ui-settings` — one settings surface for the whole bundle. Each section
+ * `/ui` — one settings surface for the whole bundle. Each section
  * drives its extension's live bridge (or the sidebar host's own controls),
  * so changes take effect immediately and persist through exactly the same
- * code paths as the individual `/sidebar`, `/pretty-tui`, `/stereo-view`,
- * and `/powerline` commands. There is no second source of truth here.
+ * component control paths. There is no second source of truth here.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   getPowerlineBridge,
+  getNoticeBridge,
   getPrettyTuiBridge,
   getStereoBridge,
+  type NoticeBridge,
   type PowerlineBridge,
   type PrettyTuiBridge,
-} from "./bridges.js";
+} from "./ui-runtime.js";
 import type { SidebarControls } from "./sidebar-host.js";
-import { PRESETS } from "../powerline/presets.js";
 
 type MenuExit = "back" | "exit";
 
 export function registerSettingsPanel(pi: ExtensionAPI, sidebar: SidebarControls): void {
-  pi.registerCommand("ui-settings", {
+  pi.registerCommand("ui", {
     description: "All bundle settings in one panel (sidebar, pretty-tui, stereo split, powerline)",
-    handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") {
-        ctx.ui.notify("The settings panel needs interactive mode", "warning");
-        return;
+    handler: async (args, ctx) => {
+      const [action = "", ...rest] = args.trim().split(/\s+/);
+      const value = rest.join(" ");
+      const power = getPowerlineBridge();
+      const pretty = getPrettyTuiBridge();
+      const stereo = getStereoBridge();
+      const notices = getNoticeBridge();
+      if (action === "status") {
+        ctx.ui.notify([sidebar.statusLine(), stereo?.statusLine(), power?.statusLine(), pretty?.statusLine()].filter(Boolean).join("\n"), "info");
+      } else if (action === "preset" && power) {
+        await power.runCommand(`preset ${value}`, ctx);
+      } else if (action === "powerline" && power) {
+        await power.runCommand(value, ctx);
+      } else if (action === "perf" && power) {
+        if (value === "on" || value === "off") {
+          updateSection("diagnostics", (saved) => ({ ...saved, enabled: value === "on" }));
+          await ctx.reload();
+        } else await power.performance(value, ctx);
+      } else if (action === "sidebar") {
+        await sidebar.runCommand(value, ctx);
+      } else if (action === "notices" && notices) {
+        await notices.runCommand(value, ctx);
+      } else if (action === "split" && stereo) {
+        if (["on", "off", "toggle"].includes(value)) stereo.setEnabled(value === "toggle" ? !stereo.enabled() : value === "on");
+        else await stereo.runCommand(value, ctx);
+      } else if (action === "mode" && pretty && ["full", "compact", "clean"].includes(value)) {
+        pretty.setMode(value as "full" | "compact" | "clean");
+      } else if (action === "theme" && value) {
+        applyTheme(ctx, value);
+      } else if (action) {
+        ctx.ui.notify("Use /ui [status|preset <name>|mode <full|compact|clean>|split|sidebar|notices|powerline|perf|theme <name>]", "warning");
+      } else if (ctx.mode !== "tui") {
+        ctx.ui.notify("The settings panel requires interactive mode", "warning");
+      } else {
+        await rootMenu(ctx, sidebar);
       }
-      await rootMenu(ctx, sidebar);
+
     },
   });
+  pi.on("session_start", (_event, ctx) => {
+    const theme = readSettings().theme;
+    if (typeof theme === "string" && ctx.hasUI) applyTheme(ctx, theme, false);
+  });
+
 }
 
 const section = (name: string, status: string): string => `${name} — ${status}`;
@@ -38,24 +75,37 @@ async function rootMenu(ctx: ExtensionContext, sidebar: SidebarControls): Promis
     const pretty = getPrettyTuiBridge();
     const stereo = getStereoBridge();
     const powerline = getPowerlineBridge();
+    const notices = getNoticeBridge();
     const choice = await ctx.ui.select("pi-pretty-stereo-view — settings", [
       section("Sidebar", sidebar.statusLine()),
-      section("Pretty TUI", pretty ? pretty.statusLine() : "not available in this session"),
-      section("Stereo split", stereo ? stereo.statusLine() : "not mounted yet (appears with the first reply)"),
-      section("Powerline", powerline ? powerline.statusLine() : "not available in this session"),
+      section("Tool presentation", pretty ? pretty.statusLine() : "not available in this session"),
+      section("Split view", stereo ? stereo.statusLine() : "unavailable"),
+      section("Status bar", powerline ? powerline.statusLine() : "unavailable"),
+      section("Subagents", sidebar.isPanelEnabled("subagent") ? "on" : "off"),
+      section("Processes", sidebar.isPanelEnabled("process") ? "on" : "off"),
+      section("Notices", notices ? notices.statusLine() : "unavailable"),
+      section("Theme", String(readSettings().theme ?? "host default")),
       "Exit",
     ]);
     if (!choice || choice === "Exit") return;
     let result: MenuExit = "back";
     if (choice.startsWith("Sidebar — ")) {
       result = await sidebarMenu(ctx, sidebar);
-    } else if (choice.startsWith("Pretty TUI — ") && pretty) {
+    } else if (choice.startsWith("Tool presentation — ") && pretty) {
       result = await prettyMenu(ctx, pretty);
-    } else if (choice.startsWith("Stereo split — ")) {
-      if (stereo) await stereo.openSettings(ctx.ui);
+    } else if (choice.startsWith("Split view — ")) {
+      if (stereo) stereo.setEnabled(!stereo.enabled());
       else ctx.ui.notify("The stereo split appears after the first assistant reply", "info");
-    } else if (choice.startsWith("Powerline — ") && powerline) {
+    } else if (choice.startsWith("Status bar — ") && powerline) {
       result = await powerMenu(ctx, powerline);
+    } else if (choice.startsWith("Notices — ") && notices) {
+      result = await noticesMenu(ctx, notices);
+    }
+    if (choice.startsWith("Subagents — ")) sidebar.setPanelEnabled("subagent", !sidebar.isPanelEnabled("subagent"));
+    if (choice.startsWith("Processes — ")) sidebar.setPanelEnabled("process", !sidebar.isPanelEnabled("process"));
+    if (choice.startsWith("Theme — ")) {
+      const name = await ctx.ui.select("Theme", [...ctx.ui.getAllThemes().map((theme) => theme.name), "Back"]);
+      if (name && name !== "Back") applyTheme(ctx, name);
     }
     if (result === "exit") return;
   }
@@ -124,9 +174,47 @@ async function powerMenu(ctx: ExtensionContext, power: PowerlineBridge): Promise
     if (choice.startsWith("Enable") || choice.startsWith("Disable")) await power.runCommand("", ctx);
     else if (choice.startsWith("Status placement")) await power.runCommand("placement toggle", ctx);
     else if (choice.startsWith("Preset:")) {
-      const names = Object.keys(PRESETS);
+      const names = power.presets();
       const preset = await ctx.ui.select(`Powerline preset — current: ${power.preset()}`, [...names, "Back"]);
       if (preset && preset !== "Back") await power.runCommand(`preset ${preset}`, ctx);
     }
   }
+}
+
+async function noticesMenu(ctx: ExtensionContext, notices: NoticeBridge): Promise<MenuExit> {
+  for (;;) {
+    const inline = notices.inlineLevels();
+    const choice = await ctx.ui.select(`Notices — ${notices.statusLine()}`, [
+      "Open the inbox (ctrl+alt+n)",
+      notices.external() ? "Other extensions: routed to the inbox (turn off)" : "Other extensions: printed in the transcript (route them)",
+      `Print inline anyway: ${inline.length > 0 ? inline.join(", ") : "nothing"}`,
+      "Clear the inbox",
+      "Back",
+    ]);
+    if (!choice || choice === "Back") return "back";
+    if (choice.startsWith("Open the inbox")) {
+      await notices.runCommand("open", ctx);
+      return "back";
+    }
+    if (choice.startsWith("Other extensions")) await notices.runCommand("external", ctx);
+    if (choice.startsWith("Clear the inbox")) await notices.runCommand("clear", ctx);
+    if (choice.startsWith("Print inline anyway")) {
+      const level = await ctx.ui.select("Print this level in the transcript as well", ["info", "warning", "error", "Back"]);
+      if (level && level !== "Back") notices.toggleInlineLevel(level as "info" | "warning" | "error");
+    }
+  }
+}
+
+function applyTheme(ctx: ExtensionContext, name: string, persist = true): void {
+  const theme = ctx.ui.getTheme(name);
+  if (!theme) {
+    ctx.ui.notify(`Theme is unavailable: ${name}`, "warning");
+    return;
+  }
+  const result = ctx.ui.setTheme(theme);
+  if (!result.success) {
+    ctx.ui.notify(result.error ?? "Cannot apply theme", "error");
+    return;
+  }
+  if (persist) updateSettings((plane) => ({ ...plane, theme: name }));
 }

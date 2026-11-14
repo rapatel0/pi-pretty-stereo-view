@@ -1,17 +1,15 @@
+import { uiScheduler, type Cancel } from "../../shared/scheduler.js";
 import type { ContextUsage, Theme } from "@earendil-works/pi-coding-agent";
 import { ScrollView, VStack, type Component } from "@earendil-works/pi-tui";
 import type { RunActivitySnapshot } from "../ctx/activity.ts";
 import type { ContextEstimate } from "../ctx/data.ts";
 import { ContextPanel } from "../ctx/panel.ts";
-import type { ResourceButtonId } from "../session/panel.ts";
-import { SessionPanel, type SessionListItem } from "../session/panel.ts";
 import { ToolViewPanel } from "../tool-view/panel.ts";
 import { panelBottom } from "./panel.ts";
 import type { ToolViewMode } from "../tool-view/types.ts";
 import type { ToolUsageSnapshot } from "../tool-view/usage.ts";
 import type { SidebarPanelDefinition } from "./registry.ts";
 
-export const SESSION_PANEL_ID = "sessions";
 export const CONTEXT_PANEL_ID = "context";
 export const TOOL_VIEW_PANEL_ID = "tool-view";
 
@@ -65,14 +63,6 @@ export type DefaultSidebarPanelOptions = {
   readonly getToolViewMode: () => ToolViewMode | undefined;
   readonly getToolUsage: () => ToolUsageSnapshot | undefined;
   readonly onSelectToolViewMode: (mode: ToolViewMode) => void;
-  readonly loadSessions: () => Promise<readonly SessionListItem[]>;
-  readonly onSelectSession: (session: SessionListItem) => void;
-  readonly onRenameSession: (session: SessionListItem) => void;
-  readonly onDeleteSession: (session: SessionListItem) => void;
-  readonly onTogglePinSession?: (session: SessionListItem) => void;
-  readonly onDeleteOthers: () => void;
-  readonly onOpenSessionManager?: () => void;
-  readonly onOpenResources: (button: ResourceButtonId) => void;
 };
 
 class AdaptiveScrollView extends ScrollView {
@@ -85,31 +75,7 @@ class AdaptiveScrollView extends ScrollView {
 export function createDefaultSidebarPanels(
   options: DefaultSidebarPanelOptions,
 ): readonly SidebarPanelDefinition[] {
-  return [{
-    id: SESSION_PANEL_ID,
-    layout: { minSize: 4, maxSize: 9 },
-    create({ tui, theme, getDesiredWidth, cacheRender }) {
-      const panel = new SessionPanel(theme, {
-        tui,
-        getDesiredWidth,
-        loadSessions: options.loadSessions,
-        onSelect: options.onSelectSession,
-        onRename: options.onRenameSession,
-        onDelete: options.onDeleteSession,
-        onTogglePin: options.onTogglePinSession,
-        onDeleteOthers: options.onDeleteOthers,
-        onOpenManager: options.onOpenSessionManager,
-        onOpenResources: options.onOpenResources,
-      });
-      cacheRender?.(panel);
-      panel.refresh();
-      return {
-        component: panel,
-        update(): void { panel.refresh(); },
-        dispose(): void { panel.dispose(); },
-      };
-    },
-  }, {
+  const allPanels: readonly SidebarPanelDefinition[] = [{
     id: CONTEXT_PANEL_ID,
     layout: { minSize: 10, maxSize: ({ terminalRows }) => Math.max(10, Math.floor(terminalRows * 0.35)) },
     create({ tui, theme, getDesiredWidth, cacheRender }) {
@@ -127,15 +93,14 @@ export function createDefaultSidebarPanels(
       cacheRender?.(panel);
       // Keep elapsed time current during a run, but avoid waking an idle TUI.
       // Activity transitions call sidebar.refresh(), which starts/stops this ticker.
-      let renderTimer: ReturnType<typeof setInterval> | undefined;
+      let renderTimer: Cancel | undefined;
       const syncTicker = (): void => {
         if (options.getActivity?.()?.phase === "running") {
           if (!renderTimer) {
-            renderTimer = setInterval(() => tui.requestRender(), 1_000);
-            renderTimer.unref?.();
+            renderTimer = uiScheduler.repeat(() => tui.requestRender(), 1_000);
           }
         } else if (renderTimer) {
-          clearInterval(renderTimer);
+          renderTimer();
           renderTimer = undefined;
         }
       };
@@ -144,7 +109,7 @@ export function createDefaultSidebarPanels(
         component: new AdaptiveScrollView(panel, { follow: "none", overscroll: "chain", scrollbar: "hidden" }),
         refresh(): void { syncTicker(); },
         dispose(): void {
-          if (renderTimer) clearInterval(renderTimer);
+          if (renderTimer) renderTimer();
           renderTimer = undefined;
         },
       };
@@ -172,4 +137,5 @@ export function createDefaultSidebarPanels(
       };
     },
   }];
+  return allPanels;
 }

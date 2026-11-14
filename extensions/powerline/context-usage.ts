@@ -1,3 +1,4 @@
+import { isRecord } from "../shared/value.js";
 import { estimateTokens, sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export interface CoreContextUsage {
@@ -13,9 +14,6 @@ interface DisplayContextUsageInput {
   fallbackContextWindow: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 interface ContextUsageSource {
   sessionManager: {

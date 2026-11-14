@@ -1,3 +1,4 @@
+import { isRecord } from "../shared/value.js";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 type SessionUsage = AssistantMessage["usage"];
@@ -13,9 +14,6 @@ export interface SessionTokenStats {
   thinkingLevelFromSession: string | null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);

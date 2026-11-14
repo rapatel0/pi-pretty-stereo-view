@@ -3,6 +3,7 @@
 // sync; a module nobody loads is dead weight in every user's startup bundle.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import ts from "typescript";
 
 const ROOT = new URL("../extensions/", import.meta.url).pathname;
 const ENTRY = `${ROOT}index.ts`;
@@ -49,4 +50,19 @@ const unreached = all.filter((file) => !reached.has(file) && !file.endsWith("/in
 console.log(`modules=${all.length} reached=${reached.size} unreached=${unreached.length}`);
 for (const file of unreached) console.log(`UNREACHED ${file.slice(ROOT.length)}`);
 console.log(unreached.length === 0 ? "REACH PROBE PASS" : "REACH PROBE FAIL");
-process.exit(unreached.length === 0 ? 0 : 1);
+const oversized = [];
+for (const file of all.filter((file) => file.includes("/pretty-tui/"))) {
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  const visit = (node) => {
+    if (ts.isFunctionLike(node) && node.body) {
+      const start = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+      const end = source.getLineAndCharacterOfPosition(node.end).line + 1;
+      if (end - start + 1 > 300) oversized.push(`${file.slice(ROOT.length)}:${start}: ${end - start + 1} lines`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+}
+for (const finding of oversized) console.error(`FUNCTION LIMIT FAIL ${finding}`);
+console.log(`FUNCTION LIMIT ${oversized.length === 0 ? "PASS" : "FAIL"}: pretty-tui ceiling=300 lines`);
+process.exit(unreached.length === 0 && oversized.length === 0 ? 0 : 1);

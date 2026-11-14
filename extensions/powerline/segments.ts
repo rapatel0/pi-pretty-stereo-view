@@ -6,6 +6,7 @@ import { fg, applyColor } from "./theme.ts";
 import { getIcons, SEP_DOT, getThinkingText } from "./icons.ts";
 import { formatUsdCost } from "./currency-rates.ts";
 import { getGitRemoteHost } from "./git-status.ts";
+import { noticeStore, type NoticeLevel } from "../ui/notices/store.ts";
 import type { IconSet } from "./icons.ts";
 import type { GitHost } from "./git-status.ts";
 
@@ -73,25 +74,6 @@ const modelSegment: StatusLineSegment = {
   },
 };
 
-const shellModeSegment: StatusLineSegment = {
-  id: "shell_mode",
-  render(ctx) {
-    if (!ctx.shellModeActive) {
-      return { content: "", visible: false };
-    }
-
-    const shellName = ctx.shellName ?? "shell";
-    const state = ctx.shellRunning ? "run" : "idle";
-    const cwd = ctx.shellCwd ? basename(ctx.shellCwd) : null;
-    const parts = [shellName, state];
-    if (cwd) {
-      parts.push(cwd);
-    }
-
-    return { content: color(ctx, "shellMode", parts.join(SEP_DOT)), visible: true };
-  },
-};
-
 const pathSegment: StatusLineSegment = {
   id: "path",
   render(ctx) {
@@ -99,7 +81,7 @@ const pathSegment: StatusLineSegment = {
     const opts = ctx.options.path ?? {};
     const mode = opts.mode ?? "basename";
 
-    let pwd = ctx.shellModeActive && ctx.shellCwd ? ctx.shellCwd : (ctx.cwd ?? process.cwd());
+    let pwd = ctx.cwd ?? process.cwd();
     const home = process.env.HOME || process.env.USERPROFILE;
 
     if (mode === "basename") {
@@ -492,9 +474,35 @@ const extensionStatusesSegment: StatusLineSegment = {
 // Segment Registry
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Unread extension notices collected by the notice router. Coloured by the
+ * worst unread level, so a silent error cannot hide behind info chatter, and
+ * named by its loudest source when the list is short enough to trust.
+ */
+function worstUnreadLevel(unread: Record<NoticeLevel, number>): SemanticColor {
+  if (unread.error > 0) return "noticeError";
+  if (unread.warning > 0) return "noticeWarn";
+  return "noticeInfo";
+}
+
+const noticesSegment: StatusLineSegment = {
+  id: "notices",
+  render(ctx) {
+    const counts = noticeStore.counts();
+    if (counts.unread === 0) return { content: "", visible: false };
+
+    const icons = getIcons();
+    const parts = [`${icons.warning} ${counts.unread}`];
+    if (ctx.options.notices?.showSource !== false && counts.sources.length > 0) {
+      const extra = counts.sources.length - 1;
+      parts.push(extra > 0 ? `${counts.sources[0].source} +${extra}` : counts.sources[0].source);
+    }
+    return { content: color(ctx, worstUnreadLevel(counts.unreadByLevel), parts.join(SEP_DOT)), visible: true };
+  },
+};
+
 export const SEGMENTS: Record<BuiltinStatusLineSegmentId, StatusLineSegment> = {
   model: modelSegment,
-  shell_mode: shellModeSegment,
   path: pathSegment,
   git: gitSegment,
   thinking: thinkingSegment,
@@ -512,6 +520,7 @@ export const SEGMENTS: Record<BuiltinStatusLineSegmentId, StatusLineSegment> = {
   cache_read: cacheReadSegment,
   cache_write: cacheWriteSegment,
   extension_statuses: extensionStatusesSegment,
+  notices: noticesSegment,
 };
 
 function renderCustomSegment(id: `custom:${string}`, ctx: SegmentContext): RenderedSegment {

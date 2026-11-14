@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { agentEnv } from "./harness.mjs";
+const { dir, module: loadModule } = agentEnv({}, "ppsv-work-");
+const { visibleWidth } = await import("@earendil-works/pi-tui");
+const { WorkState, connectSubagentEvents } = await loadModule("extensions/ui/work/state.ts");
+const { WorkPanel } = await loadModule("extensions/ui/work/panel.ts");
+const { readWorkOutput, openWorkOutput } = await loadModule("extensions/ui/work/output.ts");
+const state = new WorkState();
+const listeners = new Map();
+const events = {
+  on(name, fn) { listeners.set(name, fn); return () => listeners.delete(name); },
+  emit(name, value) {
+    if (name === "subagents:rpc:list") {
+      listeners.get(`subagents:rpc:list:reply:${value.requestId}`)?.({ success: true, data: { agents: [{ id: "existing", status: "running", sessionFile: "/tmp/existing-session" }] } });
+    } else listeners.get(name)?.(value);
+  },
+};
+const release = connectSubagentEvents({ events }, state);
+assert.equal(state.get("subagent", "existing").sessionFile, "/tmp/existing-session");
+listeners.get("subagents:usage")({ id: "nested", parentAgentId: "existing" });
+assert.equal(state.get("subagent", "nested").parentAgentId, "existing");
+listeners.get("subagents:state")({ id: "workflow-child", workflowId: "workflow-test", description: "cosmology", status: "running", partialText: "Workflow live output" });
+assert.equal(state.get("subagent", "workflow-child").workflowId, "workflow-test");
+assert.equal(readWorkOutput(state.get("subagent", "workflow-child")), "Workflow live output");
+listeners.get("subagents:state")({ id: "agent-live", status: "running", sessionFile: "/tmp/live-session" });
+assert.equal(state.get("subagent", "agent-live").sessionFile, "/tmp/live-session");
+listeners.get("subagents:state")({ id: "agent-memory", status: "running", partialText: "First streamed token" });
+assert.equal(readWorkOutput(state.get("subagent", "agent-memory")), "First streamed token");
+listeners.get("subagents:started")({ id: "agent-1", description: "Check changes" });
+assert.equal(state.get("subagent", "agent-1").status, "running");
+listeners.get("subagents:completed")({ id: "agent-1", result: "All checks pass" });
+assert.equal(readWorkOutput(state.get("subagent", "agent-1")), "All checks pass");
+listeners.get("subagents:started")({ id: "agent-1" });
+assert.equal(state.get("subagent", "agent-1").result, undefined);
+assert.match(readWorkOutput(state.get("subagent", "agent-1")), /no published session file/);
+release();
+assert.equal(listeners.size, 0);
+const file = join(dir, "agent.jsonl");
+writeFileSync(file, JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Live answer" }] } }) + '\n{"partial":');
+state.observe("subagent", { id: "agent-1", sessionFile: file });
+assert.match(readWorkOutput(state.get("subagent", "agent-1")), /Live answer/);
+state.rebuild([{ type: "custom", customType: "subagents:record", data: { id: "old", status: "completed", result: "Saved result" } }]);
+assert.equal(state.get("subagent", "agent-1"), undefined);
+assert.equal(readWorkOutput(state.get("subagent", "old")), "Saved result");
+const text = (value) => ({ content: [{ type: "text", text: value }] });
+state.observeTool("bg_task_spawn", text("Started background process build (bg_123). Status: running.\nLog: /tmp/log"), { name: "build" });
+assert.equal(state.get("process", "bg_123").status, "running");
+state.observeTool("bg_task_status", text("Background task bg_123 is completed."), { id: "bg_123" });
+assert.equal(state.get("process", "bg_123").status, "completed");
+state.observeTool("bg_task_status", text("Background task bg_123 is succeeded.\nexit=0\nCPU_MONITOR_DONE"), { id: "bg_123" });
+assert.equal(state.get("process", "bg_123").status, "succeeded");
+state.observeTool("bg_task_list", text("bg_456 running process 5s · new task"), {});
+assert.equal(state.get("process", "bg_456").status, "running");
+const selected = [];
+const panel = new WorkPanel({ fg: (_color, value) => value }, state, "process", (item) => selected.push(item.id));
+for (const width of [1, 8, 24, 40]) assert.ok(panel.render(width).every((line) => visibleWidth(line) <= width));
+panel.render(40);
+assert.equal(panel.handleMouse({ type: "click", button: "left", y: 1 }).handled, true);
+await new Promise((resolve) => queueMicrotask(resolve));
+assert.equal(selected.length, 1);
+let view;
+const ctx = { ui: { async custom(factory) {
+  view = factory({ terminal: { rows: 24 }, requestRender() {} }, {}, {}, () => {});
+  assert.match(view.render(50).join("\n"), /Saved result/);
+  view.handleInput("\x1b");
+} } };
+await openWorkOutput(ctx, state, state.get("subagent", "old"));
+console.log("WORK PASS: lifecycle events, saved records, output tails, process observations, row clicks, widths, and overlay lifecycle");

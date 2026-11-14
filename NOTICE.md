@@ -138,3 +138,52 @@ removed: dead bindings left by earlier removals in this branch — `closeSync`, 
 `SelectList`, `isKeyRelease` in `shortcuts.ts` (orphaned by the stash removal), and `visibleWidth` in
 `segments.ts` (orphaned by the queue removal). `npx tsc --noEmit --noUnusedLocals` now reports zero
 findings in every touched file, which is the tree's baseline state.
+
+## Editor split (U1c)
+
+Removed `/bash-mode` and `/bash-reset`, their toggle shortcut, the managed shell process,
+and the transcript widget. Removed the `shell_mode` segment from the registry and all presets.
+
+`extensions/powerline/editor.ts` retains the editor border, prompt history, boundary shortcuts,
+fast input paths, and file URI paste support. `one-off-shell/` retains completion for `!` commands
+and reads existing history. It does not write project history. The legacy `bashMode.completions`
+flag still controls this optional completion.
+
+All six probes pass, including the new editor probe and its `/compact` check. All modules remain
+reachable. TypeScript passes with unrelated sidebar files at `HEAD` in a temporary copy.
+The shared checkout retains a pre-existing TypeScript error in the sidebar work.
+
+## Unified controls and runtime (rewrite)
+
+The package registers only `/ui`. Keyboard shortcuts remain.
+The sidebar contains context, tool use, subagents, and processes. Session management is removed.
+
+One atomic settings file replaces separate writes for transcript, split, and sidebar preferences.
+The migration leaves legacy files intact. The settings store also owns theme overrides, diagnostic options,
+and the currency cache. Pi's agent-directory API replaces the package's separate path resolver.
+
+`integrated/ui-runtime.ts` owns the internal interface. Notification callbacks retain their order behind
+one host listener per event. Events with return values retain their native dispatch behavior.
+The editor frame uses explicit ownership. Layout transitions retain the attach/detach order.
+
+A shared scheduler owns UI timing. Git data refreshes after events instead of time-based expiry.
+The real idle check records zero recurring callbacks and zero child starts over ten seconds.
+
+Shared helpers own value checks, terminal padding, ANSI conversion, and tool presentation.
+The editor frame and user/custom message patches now occupy separate modules.
+`shared/render-cache.ts` now owns native observation, per-frame reuse, and keyed render memoization.
+Frame keys include the side-border setting. `shared/keys.ts` owns key matches.
+`integrated/defaults.ts` holds initial preferences and presets.
+
+The transcript entry now calls named modules in the original initialization order. All transcript
+functions fit the 300-line ceiling. A typed runtime context replaces the shared outer closure.
+The paired producer change supplies public live state and response text. The UI requests a scoped
+snapshot and opens live output from a row click. Existing producer events retain their meaning.
+
+## Reasoning and terminal response corrections
+
+Split view retains terminal alerts when a request returns no answer text.
+The named internal interface also provides explicit assistant pane projections for clean mode.
+It no longer treats removed native thinking children as the renderer's complete content.
+Reasoning and answers keep separate panes. Mode changes request an immediate redraw.
+Native tmux validation covers real mouse input, widths 40–200, and repeated layout transitions.

@@ -51,15 +51,19 @@ try {
   await mod.default(pi);
   console.log(`FACTORIES OK events=${registered.events.length} commands=[${[...new Set(registered.commands)].join(",")}] shortcuts=${registered.shortcuts.length} tools=${registered.tools.length}`);
   const commands = new Set(registered.commands);
-  for (const required of ["ui-settings", "sidebar", "powerline", "pretty-tui", "stereo-view"]) {
+  for (const required of ["ui"]) {
     if (!commands.has(required)) {
       failures++;
       console.log(`SMOKE FAIL command "${required}" not registered`);
     }
   }
+  if (commands.size !== 1 || registered.commands.length !== 1 || registered.shortcuts.length < 7) {
+    failures++;
+    console.log(`SMOKE FAIL surface: commands=${registered.commands.length}, shortcuts=${registered.shortcuts.length}`);
+  }
   // The unified panel drives each component through its bridge; a missing
-  // bridge means /ui-settings would show dead sections.
-  const bridges = await loadModule("extensions/integrated/bridges.js");
+  // bridge means /ui would show dead sections.
+  const bridges = await loadModule("extensions/integrated/ui-runtime.js");
   for (const [name, getter] of [["pretty-tui", "getPrettyTuiBridge"], ["stereo", "getStereoBridge"], ["powerline", "getPowerlineBridge"]]) {
     const bridge = bridges[getter]?.();
     if (bridge && typeof bridge.statusLine === "function") {

@@ -1,6 +1,8 @@
+import { fillToWidth } from "../shared/text.js";
+import { matchesKey } from "../shared/keys.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
-  getKeybindings, HStack, Input, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
+  getKeybindings, HStack, Input, MouseRegion, stripTerminalSequences, Text, truncateToWidth, VStack,
   type Component, type TUI,
 } from "@earendil-works/pi-tui";
 
@@ -130,7 +132,7 @@ export class PanelSearch extends VStack {
     private readonly tui: TUI,
     private readonly theme: () => Theme,
     private readonly match: (hit: SearchHit | undefined, query: string) => void,
-    private readonly close: () => void,
+    close: () => void,
   ) {
     super();
     this.input = new SearchInput(() => this.refresh(true), () => this.step(-1));
@@ -161,7 +163,7 @@ export class PanelSearch extends VStack {
     });
     this.addChild(border(width => {
       const message = this.error ? truncateToWidth(" " + searchText(this.error.replace(/[\r\n]+/g, " ")) + " ", Math.max(0, width - 2), "…") : "";
-      return "┌" + message + "─".repeat(Math.max(0, width - 2 - visibleWidth(message))) + "┐";
+      return "┌" + message + fillToWidth(width - 2, [message], "─") + "┐";
     }), { basis: 1, shrink: 0 });
     this.addChild(new HStack([
       { component: border(() => "│"), basis: 1, shrink: 0 },

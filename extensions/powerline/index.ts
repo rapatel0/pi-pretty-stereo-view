@@ -1,3 +1,9 @@
+import { DEFAULT_SHORTCUTS } from "../integrated/defaults.js";
+import { POWERLINE_DEFAULTS } from "../integrated/defaults.js";
+import { padToWidth } from "../shared/text.js";
+import { isRecord } from "../shared/value.js";
+import { uiScheduler, type Cancel } from "../shared/scheduler.js";
+import { readSettings, updateSettings } from "../integrated/settings-store.js";
 import {
   copyToClipboard,
   type ExtensionAPI,
@@ -6,29 +12,22 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { CURSOR_MARKER, isKeyRelease, type AutocompleteProvider, truncateToWidth, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
 
 import type { ColorScheme, SegmentContext, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./types.ts";
 import type { PowerlineConfig } from "./powerline-config.ts";
-import { setPowerlineBridge } from "../integrated/bridges.js";
-import { BashTranscriptStore } from "./bash-mode/transcript.ts";
+import { getPromptHistoryState, setEditorChromeActive, setEditorFactory, setPowerlineBridge } from "../integrated/ui-runtime.js";
 import {
   BashCompletionEngine,
-  BashAutocompleteProvider,
   getOneOffBashCommandContext,
-  ModeAwareAutocompleteProvider,
+  OneOffShellAutocompleteProvider,
   OneOffBashAutocompleteProvider,
-} from "./bash-mode/completion.ts";
-import { BashModeEditor, isPrintableInput } from "./bash-mode/editor.ts";
-import { ManagedShellSession } from "./bash-mode/shell-session.ts";
-import { matchHistoryEntries, readGlobalShellHistory, readProjectHistory, appendProjectHistory } from "./bash-mode/history.ts";
-import type { BashModeSettings } from "./bash-mode/types.ts";
+} from "./one-off-shell/completion.ts";
+import { PowerlineEditor, isPrintableInput } from "./editor.ts";
 import { getPreset, PRESETS } from "./presets.ts";
-import { getAgentPath } from "./paths.ts";
 import { collectHiddenExtensionStatusKeys, getNotificationExtensionStatuses, mergeSegmentOptions, mergeSegmentsWithCustomItems, nextPowerlineSettingWithOptions, nextPowerlineSettingWithPreset, parsePowerlineConfig } from "./powerline-config.ts";
 import { getSeparator } from "./separators.ts";
 import { renderSegment } from "./segments.ts";
+import { noticeStore } from "../ui/notices/store.ts";
 import { resolveThinkingLevelSelection } from "./thinking-level.ts";
 import { getGitStatus, invalidateGitStatus, invalidateGitBranch, subscribeGitUpdates } from "./git-status.ts";
 import { SessionUsageCache } from "./token-stats.ts";
@@ -44,7 +43,7 @@ import {
   matchesConfiguredShortcut,
   shortcutConflictKey,
   shortcutUsesSuper,
-} from "./shortcuts.ts";
+} from "../shared/keys.js";
 import { canWaitAsFollowUp } from "./auto-follow-up.ts";
 
 // ESC is a control character matched on purpose; built dynamically so the
@@ -56,28 +55,11 @@ const ANSI_SGR_PATTERN = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════
 
-let config: PowerlineConfig = {
-  preset: "default",
-  customItems: [],
-  disabledSegments: [],
-  invalidDisabledSegments: [],
-  layout: null,
-  invalidLayoutSegments: [],
-  separator: null,
-  segmentOptions: {},
-  placement: "above",
-  invalidPlacement: null,
-  padding: 1,
-  secondaryOverflow: "drop",
-  invalidSecondaryOverflow: null,
-  workingIndicatorPlacement: "editor-border",
-  invalidWorkingIndicatorPlacement: null,
-  sendDelayMs: 0,
-  autoFollowUp: false,
-};
+
+
+let config: PowerlineConfig = structuredClone(POWERLINE_DEFAULTS);
 
 const CUSTOM_COMPACTION_STATUS_KEY = "compact-policy";
-let customCompactionEnabled = false;
 
 type ShortcutBinding = string | null;
 
@@ -91,20 +73,8 @@ export interface PowerlineShortcuts {
 type PowerlineShortcutKey = keyof PowerlineShortcuts;
 type PowerlineShortcutAction =
   | { kind: "copyEditor" }
-  | { kind: "cutEditor" }
-  | { kind: "bashMode" };
-const DEFAULT_SHORTCUTS: PowerlineShortcuts = {
-  copyEditor: "ctrl+alt+c",
-  cutEditor: "ctrl+alt+x",
-  editorStart: "super+shift+up",
-  editorEnd: "super+shift+down",
-};
-const DEFAULT_BASH_MODE_SETTINGS = {
-  toggleShortcut: "ctrl+shift+b",
-  completions: false,
-  transcriptMaxLines: 2000,
-  transcriptMaxBytes: 512 * 1024,
-} as const satisfies BashModeSettings;
+  | { kind: "cutEditor" };
+
 const SHORTCUT_KEYS: PowerlineShortcutKey[] = ["copyEditor", "cutEditor", "editorStart", "editorEnd"];
 const APP_RESERVED_SHORTCUTS = [
   "escape",
@@ -152,13 +122,11 @@ const STATUS_RENDER_DEBOUNCE_MS = 33;
 const CONTEXT_STATUS_RENDER_MS = 250;
 const EDITOR_STATUS_DEFER_MS = 150;
 const PROMPT_HISTORY_TRACKED = Symbol.for("powerlinePromptHistoryTracked");
-const PROMPT_HISTORY_STATE_KEY = Symbol.for("powerlinePromptHistoryState");
 
 interface PromptHistoryEditor {
   addToHistory?: (text: string) => void;
 }
 
-type PromptHistoryState = { savedPromptHistory: string[] };
 type SessionAssistantUsage = AssistantMessage["usage"];
 
 
@@ -193,23 +161,6 @@ function isSessionAssistantMessage(value: unknown): value is AssistantMessage {
     && value.role === "assistant"
     && hasSessionAssistantUsage(value.usage)
     && (value.stopReason === undefined || typeof value.stopReason === "string");
-}
-
-function isPromptHistoryState(value: unknown): value is PromptHistoryState {
-  return isRecord(value)
-    && Array.isArray(value.savedPromptHistory)
-    && value.savedPromptHistory.every((entry) => typeof entry === "string");
-}
-
-function getPromptHistoryState(): PromptHistoryState {
-  const existing = Reflect.get(globalThis, PROMPT_HISTORY_STATE_KEY);
-  if (isPromptHistoryState(existing)) {
-    return existing;
-  }
-
-  const state: PromptHistoryState = { savedPromptHistory: [] };
-  Reflect.set(globalThis, PROMPT_HISTORY_STATE_KEY, state);
-  return state;
 }
 
 function readPromptHistory(editor: PromptHistoryEditor | null | undefined): string[] {
@@ -262,125 +213,23 @@ function trackPromptHistory(editor: PromptHistoryEditor | null | undefined): voi
   snapshotPromptHistory(editor);
 }
 
-function getSettingsPath(): string {
-  return getAgentPath("settings.json");
-}
 
-function getProjectSettingsPath(cwd: string): string {
-  return join(cwd, ".pi", "settings.json");
-}
 
-function getGlobalCompactionPolicyPath(): string {
-  return getAgentPath("compaction-policy.json");
-}
 
-function getCustomCompactionExtensionPath(): string {
-  return getAgentPath("extensions", "pi-custom-compaction");
-}
 
-function mergeSettings(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...base };
 
-  for (const [key, overrideValue] of Object.entries(override)) {
-    const baseValue = merged[key];
-    merged[key] = isRecord(baseValue) && isRecord(overrideValue)
-      ? mergeSettings(baseValue, overrideValue)
-      : overrideValue;
-  }
 
-  return merged;
-}
 
-function readSettingsFile(settingsPath: string): Record<string, unknown> {
+
+
+
+
+function writePowerlineSetting(_cwd: string, update: (current: unknown) => unknown): boolean {
   try {
-    if (!existsSync(settingsPath)) {
-      return {};
-    }
-
-    const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    if (!isRecord(parsed)) {
-      console.debug(`[powerline-footer] Ignoring non-object settings at ${settingsPath}`);
-      return {};
-    }
-
-    return parsed;
-  } catch (error) {
-    // Settings are user-edited input. Log and keep the extension running with defaults
-    // instead of crashing the UI during startup.
-    console.debug(`[powerline-footer] Failed to read settings from ${settingsPath}:`, error);
-    return {};
-  }
-}
-
-
-function readCompactionPolicyEnabled(configPath: string): boolean | undefined {
-  if (!existsSync(configPath)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
-    if (!isRecord(parsed) || typeof parsed.enabled !== "boolean") return false;
-    return parsed.enabled;
-  } catch (error) {
-    console.debug(`[powerline-footer] Failed to read compaction policy from ${configPath}:`, error);
-    return false;
-  }
-}
-
-function detectCustomCompactionEnabled(cwd: string): boolean {
-  if (!existsSync(getCustomCompactionExtensionPath())) return false;
-
-  const projectSetting = readCompactionPolicyEnabled(join(cwd, ".pi", "compaction-policy.json"));
-  if (projectSetting !== undefined) return projectSetting;
-
-  return readCompactionPolicyEnabled(getGlobalCompactionPolicyPath()) ?? false;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-
-
-
-
-
-
-
-
-
-
-// One write target: this package's own plane in the agent dir. settings.json and the project
-// .pi/settings.json stay readable, because users own those files, but nothing here writes them.
-function getPlanePath(): string {
-  return getAgentPath("pi-pretty-stereo-view.json");
-}
-
-function readPlane(): Record<string, unknown> {
-  try {
-    const planePath = getPlanePath();
-    if (!existsSync(planePath)) return {};
-    const parsed: unknown = JSON.parse(readFileSync(planePath, "utf8"));
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function readSettings(cwd: string = process.cwd()): Record<string, unknown> {
-  // Precedence: global settings, then project settings, then our own plane.
-  return mergeSettings(mergeSettings(readSettingsFile(getSettingsPath()), readSettingsFile(getProjectSettingsPath(cwd))), readPlane());
-}
-
-function writePowerlineSetting(_cwd: string, update: (existingPowerlineSetting: unknown) => unknown): boolean {
-  const planePath = getPlanePath();
-  const plane = readPlane();
-  const next: Record<string, unknown> = { ...plane, powerline: update(plane.powerline) };
-
-  try {
-    mkdirSync(dirname(planePath), { recursive: true });
-    writeFileSync(planePath, `${JSON.stringify(next, null, 2)}\n`);
+    updateSettings((plane) => ({ ...plane, powerline: update(plane.powerline) }));
     return true;
   } catch (error) {
-    console.debug(`[powerline-footer] Failed to persist powerline setting to ${planePath}:`, error);
+    console.debug("[powerline-footer] Cannot save settings:", error);
     return false;
   }
 }
@@ -413,7 +262,7 @@ function normalizePreset(value: unknown): StatusLinePreset | null {
     return null;
   }
 
-  const preset = value.trim().toLowerCase();
+  const preset = value.trim().toLowerCase().replace(/^preset\s+/, "");
   return isValidPreset(preset) ? preset : null;
 }
 
@@ -542,16 +391,6 @@ function shortcutBelongsToOtherDefault(key: PowerlineShortcutKey, shortcut: stri
   });
 }
 
-function bashToggleShortcutReservation(settings: Record<string, unknown>): ShortcutBinding {
-  const raw = isRecord(settings.bashMode) ? settings.bashMode : {};
-  if (!Object.prototype.hasOwnProperty.call(raw, "toggleShortcut")) {
-    return DEFAULT_BASH_MODE_SETTINGS.toggleShortcut;
-  }
-
-  const parsed = parseShortcutSetting(raw.toggleShortcut);
-  return parsed === undefined ? DEFAULT_BASH_MODE_SETTINGS.toggleShortcut : parsed;
-}
-
 export function resolveShortcutConfig(settings: Record<string, unknown>): PowerlineShortcuts {
   const resolved: PowerlineShortcuts = { ...DEFAULT_SHORTCUTS };
   const shortcutSettings = settings.powerlineShortcuts;
@@ -570,11 +409,6 @@ export function resolveShortcutConfig(settings: Record<string, unknown>): Powerl
   }
 
   const used = new Set(Array.from(reservedShortcuts(), shortcutUsageKey));
-  const reservedBashToggle = bashToggleShortcutReservation(settings);
-  if (reservedBashToggle) {
-    used.add(shortcutUsageKey(reservedBashToggle));
-  }
-
   for (const key of SHORTCUT_KEYS) {
     const configured = resolved[key];
     if (configured === null) {
@@ -606,51 +440,8 @@ export function resolveShortcutConfig(settings: Record<string, unknown>): Powerl
   return resolved;
 }
 
-export function parseBashModeSettings(settings: Record<string, unknown>, powerlineShortcuts?: PowerlineShortcuts): BashModeSettings {
-  const raw = isRecord(settings.bashMode) ? settings.bashMode : {};
-  const used = new Set(Array.from(reservedShortcuts(), shortcutUsageKey));
-  if (powerlineShortcuts) {
-    for (const shortcut of Object.values(powerlineShortcuts)) {
-      if (shortcut) {
-        used.add(shortcutUsageKey(shortcut));
-      }
-    }
-  }
-
-  const configuredToggleShortcut = Object.prototype.hasOwnProperty.call(raw, "toggleShortcut")
-    ? parseShortcutSetting(raw.toggleShortcut)
-    : undefined;
-  const fallbackToggleShortcut = used.has(shortcutUsageKey(DEFAULT_BASH_MODE_SETTINGS.toggleShortcut))
-    ? null
-    : DEFAULT_BASH_MODE_SETTINGS.toggleShortcut;
-  let toggleShortcut: string | null = fallbackToggleShortcut;
-  if (configuredToggleShortcut === null) {
-    toggleShortcut = null;
-  } else if (configuredToggleShortcut && !used.has(shortcutUsageKey(configuredToggleShortcut))) {
-    toggleShortcut = configuredToggleShortcut;
-  }
-
-  if (configuredToggleShortcut && toggleShortcut !== configuredToggleShortcut) {
-    console.debug(
-      `[powerline-footer] Bash mode shortcut conflict: "${configuredToggleShortcut}" replaced with "${toggleShortcut ?? "disabled"}"`,
-    );
-  }
-  const completions = typeof raw.completions === "boolean"
-    ? raw.completions
-    : DEFAULT_BASH_MODE_SETTINGS.completions;
-  const transcriptMaxLines = typeof raw.transcriptMaxLines === "number" && Number.isFinite(raw.transcriptMaxLines)
-    ? Math.max(100, Math.floor(raw.transcriptMaxLines))
-    : DEFAULT_BASH_MODE_SETTINGS.transcriptMaxLines;
-  const transcriptMaxBytes = typeof raw.transcriptMaxBytes === "number" && Number.isFinite(raw.transcriptMaxBytes)
-    ? Math.max(16 * 1024, Math.floor(raw.transcriptMaxBytes))
-    : DEFAULT_BASH_MODE_SETTINGS.transcriptMaxBytes;
-
-  return {
-    toggleShortcut,
-    completions,
-    transcriptMaxLines,
-    transcriptMaxBytes,
-  };
+function readShellCompletionsEnabled(settings: Record<string, unknown>): boolean {
+  return settings.shellCompletions === true;
 }
 
 const FAST_EDITOR_RENDER_LINE_THRESHOLD = 80;
@@ -757,10 +548,6 @@ function renderFastCursorLine(line: string, cursorCol: number, focused: boolean)
   return `${before}${marker}\x1b[7m \x1b[0m`;
 }
 
-function padToWidth(line: string, width: number): string {
-  return `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
-}
-
 export function colorEditorBorder(editor: unknown, text: string): string {
   const borderColor = editor && typeof editor === "object"
     ? Reflect.get(editor, "borderColor")
@@ -773,7 +560,7 @@ export function colorEditorBorder(editor: unknown, text: string): string {
 export function renderFastPowerlineEditor(
   editor: unknown,
   width: number,
-  options: { bashModeActive: boolean; completionsEnabled: boolean },
+  options: { completionsEnabled: boolean },
 ): string[] | null {
   if (width < 10 || options.completionsEnabled) return null;
   if (Reflect.get(editor as object, "isInPaste") === true || Reflect.get(editor as object, "jumpMode") != null) return null;
@@ -807,7 +594,7 @@ export function renderFastPowerlineEditor(
     const text = marker === "─" ? ruleLine(position) : `${marker}${"─".repeat(Math.max(0, width - 3))}`;
     return ` ${colorEditorBorder(editor, text)}`;
   };
-  const promptGlyph = options.bashModeActive ? "$" : ">";
+  const promptGlyph = ">";
   const prompt = `${ansi.getFgAnsi(200, 200, 200)}${promptGlyph}${ansi.reset}`;
   const promptPrefix = ` ${prompt} `;
   const contPrefix = "   ";
@@ -977,9 +764,9 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   const startupSettings = readSettings();
   config = parsePowerlineConfig(startupSettings.powerline, PRESET_NAMES);
   let resolvedShortcuts = resolveShortcutConfig(startupSettings);
-  let bashModeSettings = parseBashModeSettings(startupSettings, resolvedShortcuts);
+  let shellCompletionsEnabled = readShellCompletionsEnabled(startupSettings);
 
-  let enabled = true;
+  let enabled = startupSettings.statusBarEnabled !== false;
   let sessionStartTime = Date.now();
   let sessionGeneration = 0;
   let currentCtx: any = null;
@@ -1002,18 +789,15 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     lines: string[];
   } | null = null;
   let currentEditor: any = null;
-  let bashModeActive = false;
-  let bashTranscript = new BashTranscriptStore(bashModeSettings);
   let bashCompletionEngine = new BashCompletionEngine();
-  let shellSession: ManagedShellSession | null = null;
   let powerlineCompacting = false;
   let compactionGeneration = 0;
   let pendingSend: {
     text: string;
     submit: (text: string) => unknown;
     deadline: number;
-    timer: ReturnType<typeof setTimeout>;
-    ticker: ReturnType<typeof setInterval>;
+    timer: Cancel;
+    ticker: Cancel;
   } | null = null;
 
   // Cache for the top and secondary powerline widgets.
@@ -1031,7 +815,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   const coreContextUsageCache = new CoreContextUsageCache();
 
   const getShellPath = () => process.env.SHELL || "/bin/sh";
-  const getShellCwd = () => shellSession?.state.cwd ?? currentCtx?.cwd ?? process.cwd();
+  const getShellCwd = () => currentCtx?.cwd ?? process.cwd();
   const statusRenderScheduler = createRenderScheduler(() => {
     const msSinceInput = Date.now() - lastEditorInputAt;
     if (layoutDirty && !forceNextLayoutRecompute && msSinceInput < EDITOR_STATUS_DEFER_MS) {
@@ -1053,6 +837,10 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     layoutDirty = true;
     statusRenderScheduler.schedule(delayMs);
   };
+
+  // The notices segment reads the live inbox, so an arriving notice must dirty
+  // the cached layout the same way a git or usage change does.
+  noticeStore.subscribe(() => requestStatusRender());
 
   const requestImmediateStatusRender = (options: { deferDuringTyping?: boolean } = {}) => {
     layoutDirty = true;
@@ -1103,89 +891,12 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     };
   };
 
-  const getShellHistoryEntries = (prefix: string): string[] => {
-    const project = matchHistoryEntries(
-      readProjectHistory(currentCtx?.cwd ?? process.cwd()).map((entry) => entry.command),
-      prefix,
-      50,
-    );
-    const global = matchHistoryEntries(readGlobalShellHistory(getShellPath()), prefix, 50);
-    return [...new Set([...project, ...global])];
-  };
-
-  const ensureShellSession = async (): Promise<ManagedShellSession> => {
-    if (!shellSession) {
-      shellSession = new ManagedShellSession(
-        getShellPath(),
-        currentCtx?.cwd ?? process.cwd(),
-        bashTranscript,
-        requestStatusRender,
-        (command, cwd) => appendProjectHistory(currentCtx?.cwd ?? process.cwd(), command, cwd),
-      );
-    }
-    await shellSession.ensureReady();
-    return shellSession;
-  };
-
-  const runShellCommand = async (command: string, ctx: any): Promise<void> => {
-    try {
-      const session = await ensureShellSession();
-      await session.runCommand(command);
-      requestStatusRender();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Failed to run shell command: ${message}`, "error");
-    }
-  };
-
-  const setBashModeActive = async (value: boolean, ctx: any): Promise<void> => {
-    if (value === bashModeActive) return;
-    if (!value && shellSession?.state.running) {
-      ctx.ui.notify("Wait for the current shell command to finish before leaving bash mode", "warning");
-      return;
-    }
-
-    if (value) {
-      try {
-        const session = await ensureShellSession();
-        bashModeActive = true;
-        currentEditor?.dismissBashModeUi?.();
-        currentEditor?.refreshGhostSuggestion?.();
-        requestStatusRender();
-        ctx.ui.notify(`Bash mode enabled (${session.state.shellName})`, "info");
-      } catch (error) {
-        shellSession?.dispose();
-        shellSession = null;
-        bashModeActive = false;
-        requestStatusRender();
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`Failed to start shell session: ${message}`, "error");
-      }
-      return;
-    }
-
-    bashModeActive = value;
-    currentEditor?.dismissBashModeUi?.();
-    requestStatusRender();
-    ctx.ui.notify("Bash mode disabled", "info");
-  };
-
-
-
-
-
-
-
-
-
-
-
   function takePendingSend(): NonNullable<typeof pendingSend> | null {
     const pending = pendingSend;
     if (!pending) return null;
     pendingSend = null;
-    clearTimeout(pending.timer);
-    clearInterval(pending.ticker);
+    pending.timer();
+    pending.ticker();
     tuiRef?.requestRender();
     return pending;
   }
@@ -1219,8 +930,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       text: trimmed,
       submit,
       deadline: Date.now() + config.sendDelayMs,
-      timer: setTimeout(sendPendingNow, config.sendDelayMs),
-      ticker: setInterval(() => tuiRef?.requestRender(), 1000),
+      timer: uiScheduler.once(sendPendingNow, config.sendDelayMs),
+      ticker: uiScheduler.repeat(() => tuiRef?.requestRender(), 1000),
     };
     tuiRef?.requestRender();
   }
@@ -1245,8 +956,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
   // Track session start
   pi.on("session_start", async (event, ctx) => {
-    shellSession?.dispose();
-    shellSession = null;
     sessionGeneration++;
     sessionStartTime = Date.now();
     currentCtx = ctx;
@@ -1255,7 +964,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     invalidateGitStatus();
     invalidateGitBranch();
     resetLayoutCache();
-    customCompactionEnabled = detectCustomCompactionEnabled(ctx.cwd);
     lastUserPrompt = "";
     isStreaming = false;
     liveAssistantUsage = null;
@@ -1263,12 +971,10 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     powerlineCompacting = false;
     const settings = readSettings(ctx.cwd);
     resolvedShortcuts = resolveShortcutConfig(settings);
-    bashModeSettings = parseBashModeSettings(settings, resolvedShortcuts);
+    shellCompletionsEnabled = readShellCompletionsEnabled(settings);
     showLastPrompt = settings.showLastPrompt !== false;
     config = parsePowerlineConfig(settings.powerline, PRESET_NAMES);
     warnInvalidSegmentSettings(ctx);
-    bashModeActive = false;
-    bashTranscript = new BashTranscriptStore(bashModeSettings);
     bashCompletionEngine = new BashCompletionEngine();
 
     getThinkingLevelFn = () => ctx.thinkingLevel ?? "off";
@@ -1287,10 +993,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     statusRenderScheduler.cancel();
     restoreFooterStatusRepaintHook?.();
     restoreFooterStatusRepaintHook = null;
-    shellSession?.dispose();
-    shellSession = null;
     powerlineCompacting = false;
-    bashModeActive = false;
     currentCtx = null;
     footerDataRef = null;
     getThinkingLevelFn = null;
@@ -1337,9 +1040,9 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       invalidateGitStatus();
       invalidateGitBranch();
       // Multiple staggered re-renders to catch fast and slow commands
-      setTimeout(() => requestStatusRender(), 100);
-      setTimeout(() => requestStatusRender(), 300);
-      setTimeout(() => requestStatusRender(), 500);
+      uiScheduler.once(() => requestStatusRender(), 100);
+      uiScheduler.once(() => requestStatusRender(), 300);
+      uiScheduler.once(() => requestStatusRender(), 500);
     }
   });
 
@@ -1371,6 +1074,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   // Custom-message turns have no user prompt and must preserve the current task.
   pi.on("before_agent_start", async (event, ctx) => {
     if ("messageType" in event && event.messageType === "custom") return;
+    invalidateGitStatus();
+    requestStatusRender();
     lastUserPrompt = event.prompt;
     if (ctx.hasUI) {
     }
@@ -1569,10 +1274,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     if (matchesConfiguredShortcut(data, resolvedShortcuts.cutEditor)) {
       return { kind: "cutEditor" };
     }
-    if (matchesConfiguredShortcut(data, bashModeSettings.toggleShortcut)) {
-      return { kind: "bashMode" };
-    }
-
     return null;
   }
 
@@ -1589,13 +1290,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       return;
     }
 
-    if (action.kind === "bashMode") {
-      void setBashModeActive(!bashModeActive, ctx);
-      return;
-    }
   }
-
-
 
   pi.on("agent_end", async (_event, ctx) => {
     isStreaming = false;
@@ -1633,25 +1328,21 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       if (!args?.trim()) {
         // Toggle
         enabled = !enabled;
+        updateSettings((plane) => ({ ...plane, statusBarEnabled: enabled }));
         if (enabled) {
           setupCustomEditor(ctx);
           ctx.ui.notify("Powerline enabled", "info");
         } else {
-          shellSession?.dispose();
-          shellSession = null;
-          bashTranscript.clear();
-          bashModeActive = false;
           getPromptHistoryState().savedPromptHistory = [];
           restoreFooterStatusRepaintHook?.();
           restoreFooterStatusRepaintHook = null;
           restorePendingSend();
           // Clear all custom UI components
-          ctx.ui.setEditorComponent(undefined);
+          setEditorFactory(ctx.ui, undefined);
           ctx.ui.setFooter(undefined);
           ctx.ui.setHeader(undefined);
           ctx.ui.setWidget("powerline-top", undefined);
           ctx.ui.setWidget("powerline-secondary", undefined);
-          ctx.ui.setWidget("powerline-bash-transcript", undefined);
           ctx.ui.setWidget("powerline-status", undefined);
           ctx.ui.setWidget("powerline-pending-send", undefined);
                 ctx.ui.setWidget("powerline-last-prompt", undefined);
@@ -1706,46 +1397,15 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       ctx.ui.notify(`Available presets: ${presetList}`, "info");
   };
 
-  pi.registerCommand("powerline", {
-    description: "Configure powerline status (toggle, preset)",
-    handler: (args, ctx) => powerlineCommandHandler(args, ctx),
-  });
+
 
   // Settings-panel bridge: /ui-settings reads status and drives the real
   // command handler through this registration, never a copy of it.
-  setPowerlineBridge({
-    statusLine: () => `${enabled ? "on" : "off"} · ${config.placement} · preset ${config.preset}`,
-    enabled: () => enabled,
-    placement: () => config.placement,
-    preset: () => config.preset,
-    runCommand: (cmd, panelCtx) => powerlineCommandHandler(cmd, panelCtx),
-  });
 
-  pi.registerCommand("bash-mode", {
-    description: "Toggle sticky bash mode (on, off, toggle)",
-    handler: async (args, ctx) => {
-      const mode = args?.trim().toLowerCase() || "toggle";
-      if (mode === "on") {
-        await setBashModeActive(true, ctx);
-        return;
-      }
-      if (mode === "off") {
-        await setBashModeActive(false, ctx);
-        return;
-      }
-      if (mode === "toggle") {
-        await setBashModeActive(!bashModeActive, ctx);
-        return;
-      }
-      ctx.ui.notify("Usage: /bash-mode [on|off|toggle]", "warning");
-    },
-  });
 
-  pi.registerCommand("powerline-perf", {
-    description: "Show or reset opt-in editor performance profiling",
-    handler: async (args, ctx) => {
+  const showPerformance = async (args, ctx) => {
       if (!editorPerf.options.enabled) {
-        ctx.ui.notify("Set POWERLINE_DEBUG_PERF=1 and reload to enable editor profiling", "info");
+        ctx.ui.notify("Use /ui perf on to enable editor counters", "info");
         return;
       }
       if (args.trim().toLowerCase() === "reset") {
@@ -1754,31 +1414,16 @@ export default function powerlineFooter(pi: ExtensionAPI) {
         return;
       }
       ctx.ui.notify(editorPerf.report(), "info");
-    },
+    };
+  setPowerlineBridge({
+    presets: () => Object.keys(PRESETS),
+    performance: showPerformance,
+    statusLine: () => `${enabled ? "on" : "off"} · ${config.placement} · preset ${config.preset}`,
+    enabled: () => enabled,
+    placement: () => config.placement,
+    preset: () => config.preset,
+    runCommand: (cmd, panelCtx) => powerlineCommandHandler(cmd, panelCtx),
   });
-
-  pi.registerCommand("bash-reset", {
-    description: "Reset the managed bash session",
-    handler: async (_args, ctx) => {
-      shellSession?.dispose();
-      shellSession = null;
-      bashTranscript.clear();
-      if (bashModeActive) {
-        try {
-          await ensureShellSession();
-        } catch (error) {
-          bashModeActive = false;
-          const message = error instanceof Error ? error.message : String(error);
-          ctx.ui.notify(`Failed to restart shell session: ${message}`, "error");
-          requestStatusRender();
-          return;
-        }
-      }
-      requestStatusRender();
-      ctx.ui.notify("Bash session reset", "info");
-    },
-  });
-
 
   function buildSegmentContext(ctx: any, theme: Theme, allSegmentIds: StatusLineSegmentId[]): SegmentContext {
     const presetDef = getPreset(config.preset);
@@ -1842,13 +1487,9 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       contextWindow,
       contextApproximate,
       autoCompactEnabled: ctx.settingsManager?.getCompactionSettings?.()?.enabled ?? true,
-      customCompactionEnabled: customCompactionEnabled || extensionStatuses.has(CUSTOM_COMPACTION_STATUS_KEY),
+      customCompactionEnabled: extensionStatuses.has(CUSTOM_COMPACTION_STATUS_KEY),
       usingSubscription,
       sessionStartTime,
-      shellModeActive: bashModeActive,
-      shellRunning: shellSession?.state.running ?? false,
-      shellName: shellSession?.state.shellName ?? null,
-      shellCwd: shellSession?.state.cwd ?? null,
       git: gitStatus,
       extensionStatuses,
       hiddenExtensionStatusKeys,
@@ -1955,42 +1596,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     return [truncateToWidth(` ${hint}  ${preview}`, width, "…")];
   }
 
-  function renderBashTranscriptLines(width: number, theme: Theme): string[] {
-    if (!bashModeActive) return [];
-
-    const snapshot = bashTranscript.getSnapshot();
-    if (snapshot.commands.length === 0) return [];
-
-    const lines: string[] = [];
-    if (snapshot.truncatedCommands > 0) {
-      lines.push(` ${theme.fg("dim", `… ${snapshot.truncatedCommands} earlier command${snapshot.truncatedCommands === 1 ? "" : "s"} truncated`)}`);
-    }
-
-    const recentCommands = snapshot.commands.slice(-4);
-    for (const command of recentCommands) {
-      const promptGlyph = (shellSession?.state.shellName ?? "shell") === "fish" ? ">" : "$";
-      let status: string;
-      if (command.exitCode === null) {
-        status = theme.fg("accent", "running");
-      } else if (command.exitCode === 0) {
-        status = theme.fg("success", "ok");
-      } else {
-        status = theme.fg("error", `exit ${command.exitCode}`);
-      }
-      const commandLine = truncateToWidth(command.command.replace(/\s+/g, " ").trim(), Math.max(8, width - 8), "…");
-      lines.push(` ${theme.fg("accent", promptGlyph)} ${commandLine} ${theme.fg("dim", "(")}${status}${theme.fg("dim", ")")}`);
-
-      const outputTail = command.output.slice(-6);
-      for (const outputLine of outputTail) {
-        lines.push(`   ${truncateToWidth(outputLine, Math.max(1, width - 3), "…")}`);
-      }
-    }
-
-    return lines.slice(-16);
-  }
-
   function renderLastPromptLines(width: number): string[] {
-    if (bashModeActive || !showLastPrompt || !lastUserPrompt) return [];
+    if (!showLastPrompt || !lastUserPrompt) return [];
 
     const color = getFgAnsiCode("sep");
     if (
@@ -2051,16 +1658,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
     if (!terminalWidgets) return;
 
-    if (editorPerf.options.bashWidgets) {
-      ctx.ui.setWidget("powerline-bash-transcript", (_tui: any, theme: Theme) => ({
-        dispose() {},
-        invalidate() {},
-        render(width: number): string[] {
-          return measureWidget("bash-transcript", () => renderBashTranscriptLines(width, theme));
-        },
-      }), { placement: "belowEditor" });
-    }
-
     ctx.ui.setWidget("powerline-pending-send", (_tui: any, theme: Theme) => ({
       dispose() {},
       invalidate() {},
@@ -2090,36 +1687,23 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
     ctx.ui.setWidget("powerline-top", undefined);
     ctx.ui.setWidget("powerline-secondary", undefined);
-    ctx.ui.setWidget("powerline-bash-transcript", undefined);
     ctx.ui.setWidget("powerline-status", undefined);
     ctx.ui.setWidget("powerline-pending-send", undefined);
     ctx.ui.setWidget("powerline-last-prompt", undefined);
 
-    let autocompleteFixed = !bashModeSettings.completions;
+    let autocompleteFixed = !shellCompletionsEnabled;
     const previousEditorFactory = typeof ctx.ui.getEditorComponent === "function" ? ctx.ui.getEditorComponent() : undefined;
 
     const editorFactory = (tui: any, editorTheme: any, keybindings: any) => {
       const previousEditor = previousEditorFactory?.(tui, editorTheme, keybindings);
-      const editor = new BashModeEditor(tui, editorTheme, keybindings, {
+      const editor = new PowerlineEditor(tui, editorTheme, keybindings, {
         keybindings,
         embedWorkingStatus: config.workingIndicatorPlacement === "editor-border",
-        isBashModeActive: () => bashModeActive,
-        isShellRunning: () => shellSession?.state.running ?? false,
-        onExitBashMode: () => {
-          void setBashModeActive(false, ctx);
-        },
-        onSubmitCommand: (command) => void runShellCommand(command, ctx),
         editorBoundaryShortcuts: {
           start: resolvedShortcuts.editorStart,
           end: resolvedShortcuts.editorEnd,
         },
-        onInterrupt: () => {
-          shellSession?.interrupt();
-          ctx.ui.notify("Sent interrupt to shell", "info");
-        },
-        onNotify: (message, level = "info") => ctx.ui.notify(message, level),
-        getHistoryEntries: (prefix) => getShellHistoryEntries(prefix),
-        areCompletionsEnabled: () => bashModeSettings.completions,
+        areCompletionsEnabled: () => shellCompletionsEnabled,
         resolveGhostSuggestion: async (text, signal) => {
           const oneOffBash = getOneOffBashCommandContext(text);
           if (oneOffBash) {
@@ -2166,17 +1750,16 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       };
 
       const attachAutocompleteProvider = (): boolean => {
-        if (!bashModeSettings.completions) return false;
+        if (!shellCompletionsEnabled) return false;
         if (editor.hasWrappedProvider()) return true;
         const defaultProvider = getInstalledAutocompleteProvider();
         if (!defaultProvider) return false;
 
-        const bashProvider = new BashAutocompleteProvider();
         const oneOffBashProvider = new OneOffBashAutocompleteProvider();
         installingPowerlineAutocompleteProvider = true;
         try {
           editor.installAutocompleteProvider(
-            new ModeAwareAutocompleteProvider(defaultProvider, bashProvider, oneOffBashProvider, () => bashModeActive),
+            new OneOffShellAutocompleteProvider(defaultProvider, oneOffBashProvider),
           );
         } finally {
           installingPowerlineAutocompleteProvider = false;
@@ -2201,13 +1784,13 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           return;
         }
 
-        if (pendingSend && !bashModeActive && keybindings.matches(data, "app.interrupt") && !editor.isShowingAutocomplete()) {
+        if (pendingSend && keybindings.matches(data, "app.interrupt") && !editor.isShowingAutocomplete()) {
           restorePendingSend();
           return;
         }
 
         const isSubmit = keybindings.matches(data, "tui.input.submit") && !keybindings.matches(data, "tui.input.newLine");
-        if (!powerlineCompacting && !bashModeActive && isSubmit && typeof ctx.compact === "function") {
+        if (!powerlineCompacting && isSubmit && typeof ctx.compact === "function") {
           const editorText = editor.getExpandedText().trim();
           if (editorText === "/compact") {
             editor.addToHistory?.(editorText);
@@ -2236,12 +1819,12 @@ export default function powerlineFooter(pi: ExtensionAPI) {
         if (!autocompleteFixed && !getInstalledAutocompleteProvider()) {
           autocompleteFixed = true;
           snapshotPromptHistory(editor);
-          ctx.ui.setEditorComponent(editorFactory);
+          setEditorFactory(ctx.ui, editorFactory);
           currentEditor?.handleInput(data);
           return;
         }
 
-        if (bashModeSettings.completions) {
+        if (shellCompletionsEnabled) {
           attachAutocompleteProvider();
         }
         originalHandleInput(data);
@@ -2258,7 +1841,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       // pi-pretty-tui defers its own rounded editor frame while this chrome is
       // present, so exactly one component draws the editor border.
       if (editorPerf.options.editorChrome) {
-        Reflect.set(editor, "powerlineEditorChromeActive", true);
+        setEditorChromeActive(editor, true);
       }
       const originalRender = editor.render.bind(editor);
       editor.render = (width: number): string[] => {
@@ -2272,12 +1855,10 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           if (editorPerf.options.fastRender) {
             const fastLines = editorPerf.options.enabled
               ? editorPerf.measure("editor.render.fast-probe", () => renderFastPowerlineEditor(editor, width, {
-                  bashModeActive,
-                  completionsEnabled: bashModeSettings.completions,
+                  completionsEnabled: shellCompletionsEnabled,
                 }))
               : renderFastPowerlineEditor(editor, width, {
-                  bashModeActive,
-                  completionsEnabled: bashModeSettings.completions,
+                  completionsEnabled: shellCompletionsEnabled,
                 });
             if (fastLines) {
               if (editorPerf.options.enabled) editorPerf.count("editor.render.fast-hit");
@@ -2291,7 +1872,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
               : originalRender(width);
           }
 
-          const promptGlyph = bashModeActive ? "$" : ">";
+          const promptGlyph = ">";
           const promptColor = ansi.getFgAnsi(200, 200, 200);
           const prompt = `${promptColor}${promptGlyph}${ansi.reset}`;
           const promptPrefix = ` ${prompt} `;
@@ -2345,7 +1926,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       return editor;
     };
 
-    ctx.ui.setEditorComponent(editorFactory);
+    setEditorFactory(ctx.ui, editorFactory);
 
     ctx.ui.setFooter((tui: any, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
       footerDataRef = footerData;

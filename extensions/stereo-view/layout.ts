@@ -8,7 +8,7 @@ import { NativeDocument, type Pane } from "./native.js";
 import { NativeContentIndex } from "./content.js";
 import type { Preferences } from "./preferences.js";
 import type { TranscriptTimestamps } from "./timestamps.js";
-import { isForeignLayoutRoot } from "../integrated/bridges.js";
+import { getLayoutRoot, setLayoutRoot, isForeignLayoutRoot } from "../integrated/ui-runtime.js";
 import { PANEL_SEARCH_ROWS, PanelSearch, PanelSearchShortcut, type SearchHit } from "./search.js";
 
 type NativeTui = TUI & {
@@ -174,7 +174,7 @@ export class TranscriptLayout {
       this.warn("pi-stereo-view split is unavailable: Pi's focus API is not supported.");
       return;
     }
-    if (host.layoutRoot === this.mounted && this.host) {
+    if (getLayoutRoot(host) === this.mounted && this.host) {
       const mounted = this.mounted as TranscriptRoot;
       if (mounted.unchanged()) return;
       const original = this.original!;
@@ -184,7 +184,7 @@ export class TranscriptLayout {
       this.warn("pi-stereo-view split is unavailable: Pi's fullscreen layout is not supported.");
       return;
     }
-    const root = host.layoutRoot;
+    const root = getLayoutRoot(host);
     // The bundled sidebar wraps the mounted split with its own layout root;
     // leave everything mounted while that wrapper owns the root, instead of
     // disposing the split and warning on the first message of the session.
@@ -437,7 +437,7 @@ export class TranscriptLayout {
       { component: dock, basis: "auto", shrink: 0, minSize: 1 },
     ]);
     this.mounted = mounted;
-    host.setLayoutRoot(mounted);
+    setLayoutRoot(host, mounted);
     host.requestRender();
   }
 
@@ -449,7 +449,7 @@ export class TranscriptLayout {
 
   /** Choose the last interacted pane only while a supported split is mounted. */
   searchPane(): Pane | undefined {
-    if (!this.host || this.host.layoutRoot !== this.mounted || this.failed || this.fallback ||
+    if (!this.host || getLayoutRoot(this.host) !== this.mounted || this.failed || this.fallback ||
       this.preferences.mode !== "split") return undefined;
     return this.preferences.zoom ?? this.activePane;
   }
@@ -676,7 +676,7 @@ export class TranscriptLayout {
     const host = this.host;
     this.activity?.setScrollbar("hidden");
     this.chat?.setScrollbar("hidden");
-    if (host && host.layoutRoot === this.mounted) host.setLayoutRoot(this.original);
+    if (host && getLayoutRoot(host) === this.mounted) setLayoutRoot(host, this.original);
     this.host?.requestRender();
     this.host = undefined;
     this.mounted = undefined;

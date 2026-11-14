@@ -25,8 +25,6 @@ interface CachedRemoteHost {
 }
 
 const CACHE_TTL_MS = 1000; // 1 second for file status
-const BRANCH_TTL_MS = 500; // Shorter TTL so branch updates quickly after invalidation
-const REMOTE_TTL_MS = 60_000; // Origin remote almost never changes within a session
 let cachedStatus: CachedGitStatus | null = null;
 let cachedBranch: CachedBranch | null = null;
 let cachedRemoteHost: CachedRemoteHost | null = null;
@@ -215,8 +213,7 @@ export function detectGitHost(remoteUrl: string | null): GitHost | null {
  */
 export function getGitRemoteHost(cwd = process.cwd()): GitHost | null {
   cwd = useCwd(cwd);
-  const now = Date.now();
-  if (cachedRemoteHost && now - cachedRemoteHost.timestamp < REMOTE_TTL_MS) {
+  if (cachedRemoteHost) {
     return cachedRemoteHost.host;
   }
 
@@ -240,7 +237,7 @@ export function getGitRemoteHost(cwd = process.cwd()): GitHost | null {
       });
   }
 
-  return cachedRemoteHost ? cachedRemoteHost.host : null;
+  return null;
 }
 
 /**
@@ -266,10 +263,8 @@ export function getCurrentBranch(providerBranch: string | null, cwd = process.cw
     lastProviderBranch = providerBranch;
   }
   if (providerBranch && providerBranch !== "detached") return providerBranch;
-  const now = Date.now();
-
-  // Return cached if fresh
-  if (cachedBranch && now - cachedBranch.timestamp < BRANCH_TTL_MS) {
+  // Refresh only after an explicit invalidation. Idle redraws do not start processes.
+  if (cachedBranch && cachedBranch.timestamp !== 0) {
     return cachedBranch.branch;
   }
 
@@ -296,21 +291,20 @@ export function getCurrentBranch(providerBranch: string | null, cwd = process.cw
 
 /**
  * Get git status with caching.
- * Returns cached value if within TTL, otherwise triggers async fetch.
+ * Returns cached values until an explicit event invalidates them.
  * This is designed for synchronous render() calls - returns last known value
  * while refreshing in background.
  */
-export function getGitStatus(providerBranch: string | null, pollingMode: GitPollingMode = "full", cwd = process.cwd(), statusTtlMs = CACHE_TTL_MS): GitStatus {
+export function getGitStatus(providerBranch: string | null, pollingMode: GitPollingMode = "full", cwd = process.cwd(), _statusTtlMs = CACHE_TTL_MS): GitStatus {
   cwd = useCwd(cwd);
-  const now = Date.now();
   const branch = pollingMode === "off" ? providerBranch : getCurrentBranch(providerBranch, cwd);
 
   if (pollingMode !== "full") {
     return { branch, staged: 0, unstaged: 0, untracked: 0 };
   }
 
-  // Refresh expired data in the background, serving the last known counts.
-  if (!pendingFetch && (!cachedStatus || now - cachedStatus.timestamp >= statusTtlMs)) {
+  // Serve cached data until a tool, branch, cwd, or prompt event invalidates it.
+  if (!pendingFetch && (!cachedStatus || cachedStatus.timestamp === Number.NEGATIVE_INFINITY)) {
     const fetchId = invalidationCounter; // Capture current counter
     pendingFetch = fetchGitStatus(cwd).then((result) => {
       // Cache result if no invalidation happened (including null for non-git dirs)

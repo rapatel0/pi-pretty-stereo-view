@@ -8,9 +8,9 @@ import {
   type ViewportTUI,
 } from "@earendil-works/pi-tui";
 import { createSidebarScrollView } from "./layout.ts";
-import { createSidebarRenderCache, SidebarLayoutRoot } from "./render-cache.ts";
+import { createSidebarRenderCache, SidebarLayoutRoot } from "../../shared/render-cache.js";
 import { installMouseResize, SidebarDivider } from "./resize.ts";
-import { markForeignLayoutRoot } from "../../integrated/bridges.js";
+import { getLayoutRoot, setLayoutRoot, markForeignLayoutRoot } from "../../integrated/ui-runtime.js";
 import type {
   SidebarPanelDefinition,
   SidebarPanelInstance,
@@ -101,7 +101,7 @@ export function installSidebar(
   // Extension API. In fullscreen mode the active root is present on ViewportTUI;
   // fail closed if that implementation detail changes in a future Pi release.
   const layoutTui = tui as LayoutTui;
-  const previousRoot = layoutTui.layoutRoot;
+  const previousRoot = getLayoutRoot(layoutTui);
   // layoutRoot is an internal TUI field. If Pi changes its shape, do not mount
   // a split layout over an unknown root or disrupt the normal transcript.
   if (!isComponent(previousRoot)) return noopController();
@@ -201,7 +201,7 @@ export function installSidebar(
   let uninstallMouseResize: () => void = () => {};
   try {
     markForeignLayoutRoot(splitRoot);
-    layoutTui.setLayoutRoot(splitRoot);
+    setLayoutRoot(layoutTui, splitRoot);
     // Resize uses Pi's internal Stack.entries. If unavailable, retain the
     // sidebar with its initial width instead of mutating an unknown API.
     if (sidebarEntry) {
@@ -221,7 +221,7 @@ export function installSidebar(
   } catch {
     // An incompatible TUI must not leave the transcript wrapped in our root.
     try {
-      if (layoutTui.layoutRoot === splitRoot) layoutTui.setLayoutRoot(previousRoot);
+      if (getLayoutRoot(layoutTui) === splitRoot) setLayoutRoot(layoutTui, previousRoot);
     } catch { /* Host layout setter failed during cleanup. */ }
     for (const instance of createdInstances.reverse()) {
       try { instance.dispose?.(); } catch { /* Continue cleaning up. */ }
@@ -256,8 +256,8 @@ export function installSidebar(
       }
       mountedPanels.clear();
       renderCache.beginFrame();
-      if (layoutTui.layoutRoot === splitRoot) {
-        layoutTui.setLayoutRoot(previousRoot);
+      if (getLayoutRoot(layoutTui) === splitRoot) {
+        setLayoutRoot(layoutTui, previousRoot);
       }
     },
   };
