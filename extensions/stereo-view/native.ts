@@ -11,7 +11,7 @@ export type { Pane } from "./content.js";
 
 /** Decorate one selected block without changing native text or mouse coordinates. */
 class SearchHighlight implements Component {
-  private cache?: { lines: string[]; result: string[]; width: number; query: string; hit: SearchHit; revision: number };
+  private cache?: { lines: readonly string[]; result: readonly string[]; width: number; query: string; hit: SearchHit; revision: number };
 
   constructor(
     private readonly component: Component,
@@ -21,7 +21,7 @@ class SearchHighlight implements Component {
     private readonly revision: () => number,
   ) {}
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     const lines = this.component.render(width);
     const hit = this.hit();
     const query = this.query();
@@ -90,7 +90,7 @@ export class NativeDocument extends Container {
   private lastWidth = 1;
   private frameActive = false;
   private frameWidth?: number;
-  private frameLines?: string[];
+  private frameLines?: readonly string[];
   private checked = false;
   private disposed = false;
 
@@ -259,7 +259,8 @@ export class NativeDocument extends Container {
     let levels = this.indented.get(component);
     if (!levels) { levels = []; this.indented.set(component, levels); }
     const inset = depth * 2 + (body ? 1 : 0);
-    return levels[inset] ??= new ToolIndent(component, depth, body, this.theme);
+    const wrapper = levels[inset] ?? (levels[inset] = new ToolIndent(component, depth, body, this.theme));
+    return wrapper;
   }
   private groupRow(group: ToolGroup): CompactTool {
     const source = group.calls[0].source;
@@ -283,7 +284,7 @@ export class NativeDocument extends Container {
     }
     return row;
   }
-  override render(width: number): string[] {
+  override render(width: number): readonly string[] {
     if (this.frameActive && this.frameWidth === width && this.frameLines) return this.frameLines;
     const chat = this.source.children[2] as Container;
     this.timestamps.prepare(chat.children);

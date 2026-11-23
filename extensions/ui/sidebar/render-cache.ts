@@ -4,12 +4,12 @@ const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 
 /** Only extension-owned panels opt in; no host components or prototypes change. */
 export function createSidebarRenderCache() {
-  const caches = new Set<Map<number, string[]>>();
+  const caches = new Set<Map<number, readonly string[]>>();
   return {
     beginFrame(): void { for (const cache of caches) cache.clear(); },
     cacheRender(component: Component): void {
       const render = component.render;
-      const cache = new Map<number, string[]>();
+      const cache = new Map<number, readonly string[]>();
       caches.add(cache);
       component.render = function (width) {
         let lines = cache.get(width);

@@ -38,6 +38,15 @@ New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) 
 - Dead upstream helpers renamed with `_` prefix and `void`-referenced
   (`_renderCleanGroupSummary`, `_conciseActivityText`) to satisfy this repo's
   lint rules; no behavior change.
+- The patched assistant-panel renderer (a vendored copy of Pi's
+  `AssistantMessageComponent` render loop) reads the host's per-run thinking
+  overrides only through the normalising helper `thinkingOverrideFor()`:
+  Pi 1.6.0 changed `thinkingVisibilityOverrides` from an always-created `Map`
+  to `undefined` until the first per-run click, and a direct dereference
+  threw inside `measureHeight` (crashing the TUI). Provenance comments name
+  the copied host method and the Pi versions verified; gated by
+  `test/thinking-visibility-probe.mjs` (see
+  `docs/health/2026-11-23-pi-1.6-compat.md`).
 
 ### pi-ui-extension sidebar (`extensions/ui/sidebar/`)
 - `index.ts`: `installSidebar()` accepts `SidebarInstallOptions`

@@ -31,7 +31,7 @@ class ViewportHeightContent implements Component {
     this.padding = new ViewportPadding(component, getViewportHeight);
   }
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     const lines = this.component.render(width);
     const viewportHeight = Math.max(0, Math.floor(this.getViewportHeight()));
     if (lines.length >= viewportHeight) return lines;

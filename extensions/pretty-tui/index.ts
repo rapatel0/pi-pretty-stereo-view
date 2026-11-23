@@ -80,6 +80,23 @@ const loadConfig = (path: string): PrettyTuiConfig => {
   }
 };
 
+/**
+ * Single read point for the host's per-run thinking visibility overrides.
+ *
+ * The vendored assistant-panel render loop (`renderPanelAssistant` below)
+ * copies `AssistantMessageComponent.render`/`updateContent` from
+ * `@earendil-works/pi-coding-agent`, which dereferences
+ * `this.thinkingVisibilityOverrides` on each thought run. Pi <= 1.5 always
+ * initializes that field to a `Map`; Pi 1.6.0 declares it undefined until a
+ * per-run click creates it and `setHideThinkingBlock` resets it to undefined
+ * (verified against pi-bolt bundles 1.2.1/Pi 1.5.x and 1.3.0/Pi 1.6.0, and
+ * devDependency @earendil-works/pi-coding-agent 1.4.0 and 1.6.0). Treat a
+ * missing map as an empty override map; future vendored host copies must read
+ * through this helper instead of dereferencing the field directly.
+ */
+const thinkingOverrideFor = (self: { thinkingVisibilityOverrides?: Map<number, boolean> }, runIndex: number): boolean | undefined =>
+  self.thinkingVisibilityOverrides?.get(runIndex);
+
 /** Polished user messages, tool calls, and list rendering for Pi's TUI. */
 export default function prettyTui(pi: ExtensionAPI) {
   const cwd = process.cwd();
@@ -290,7 +307,7 @@ export default function prettyTui(pi: ExtensionAPI) {
   const toolComponents = new Map<string, any>();
   const cleanToolThemes = new Map<string, any>();
   const cleanToolNames = new Map<string, string>();
-  let _renderCleanGroupSummary = (_lastToolCallId: string, _width: number): string[] => [];
+  let _renderCleanGroupSummary = (_lastToolCallId: string, _width: number): readonly string[] => [];
   // Dead in upstream pi-pretty-tui (assigned, never invoked); kept for parity.
   void _renderCleanGroupSummary;
 
@@ -537,7 +554,7 @@ export default function prettyTui(pi: ExtensionAPI) {
       };
       activityUpdateMarkdownComponents.set(member.id, cached);
     }
-    const lines = withTranscriptMarkdown(() => cached.component.render(Math.max(1, width)));
+    const lines = [...withTranscriptMarkdown(() => cached.component.render(Math.max(1, width)))];
     while (lines.length > 0 && stripTerminalSequences(lines[lines.length - 1]).trim() === "") {
       lines.pop();
     }
@@ -1412,7 +1429,9 @@ export default function prettyTui(pi: ExtensionAPI) {
             }
           }
           const runIndex = thoughtRun;
-          const hidden = isThought && (this.thinkingVisibilityOverrides.get(thoughtRun++) ?? this.hideThinkingBlock);
+          // Vendored copy of AssistantMessageComponent.render (see
+          // thinkingOverrideFor): read the per-run override through the helper.
+          const hidden = isThought && (thinkingOverrideFor(this, thoughtRun++) ?? this.hideThinkingBlock);
           const source = renderMode === "compact" && hidden
             ? [defaultActivityTheme().fg("thinkingText", truncateToWidth(previews[runIndex] ?? "", innerWidth, "…"))]
             : nativeLines.slice(sourceY, sourceY + height);
@@ -3514,7 +3533,7 @@ export default function prettyTui(pi: ExtensionAPI) {
     },
   });
 
-  _renderCleanGroupSummary = (lastToolCallId: string, width: number): string[] => {
+  _renderCleanGroupSummary = (lastToolCallId: string, width: number): readonly string[] => {
     const summaryTheme = cleanThemeForToolCall(lastToolCallId);
     if (!summaryTheme) return [];
     const settled = settledSummaries.get(lastToolCallId);
@@ -3553,7 +3572,7 @@ export default function prettyTui(pi: ExtensionAPI) {
     width: number,
     collapsedDone = false,
   ): string[] => {
-    const fit = (lines: string[]) => lines.map((line) => truncateToWidth(line, Math.max(1, width), ""));
+    const fit = (lines: readonly string[]) => lines.map((line) => truncateToWidth(line, Math.max(1, width), ""));
     const summaryTheme = activityGroupTheme(group);
     if (!summaryTheme || !activityTimeline.hasWork(group)) return [];
     const owner = activityGroupOwner(group);
@@ -3629,7 +3648,7 @@ export default function prettyTui(pi: ExtensionAPI) {
       !cleanRun.settled
     );
     return {
-      render(width: number): string[] {
+      render(width: number): readonly string[] {
         if (renderMode !== "clean") return [];
 
         const settledSummary = settledSummaries.get(toolCallId);
@@ -3761,7 +3780,7 @@ export default function prettyTui(pi: ExtensionAPI) {
   });
 
   pi.registerEntryRenderer<ToolSummaryData>("pretty-tui-tool-summary", (entry, { expanded }, theme) => ({
-    render(width: number): string[] {
+    render(width: number): readonly string[] {
       if (renderMode !== "clean" || expanded || cleanContextCompacted) return [];
       const data = entry.data;
       const groups = data?.groups?.length
