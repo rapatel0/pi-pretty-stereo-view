@@ -52,6 +52,13 @@ New integration code (`extensions/index.ts`, `extensions/integrated/`, `test/`) 
 - `index.ts`: `installSidebar()` accepts `SidebarInstallOptions`
   (`initialWidth`, `onWidthChange`) and `SidebarController.getWidth()` was added;
   used by the host to persist sidebar width. Existing callers are unaffected.
+- The Sessions panel is hidden by default since 0.4.0: `integrated/config.ts`
+  gained `sidebar.sessionsPanel` (persisted key `sidebar.sessionsPanel`,
+  default `false`). When hidden the panel is not mounted and the session
+  directory scan that ran on every settled agent turn is skipped entirely;
+  `/sidebar sessions [on|off]` and the `/ui-settings` row toggle it, and
+  `/sidebar-session switch <id>` keeps working by loading session rows on
+  demand. Context/activity/tool-view panels are unaffected.
 - Import paths retargeted to the bundled layout (`extensions/ui/...`).
 
 ### pi-powerline-footer (`extensions/powerline/`)

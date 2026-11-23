@@ -7,7 +7,7 @@ One Pi package that bundles four extensions into a single, integrated UI stack:
 | Stereo split history | `pi-stereo-view` 0.1.10 | Activity/Chat split history, search, zoom (fullscreen TUI) |
 | Powerline footer | `pi-powerline-footer` 0.21.0 | Status/footer bar, cwd & stash commands, bash-mode, vibes |
 | Pretty rendering | `pi-pretty-tui` 0.3.0 | Framed editor, message cards, markdown surfaces |
-| Right sidebar | `pi-ui-extension` 1.9.9 (sidebar subsystem) | Toggleable right sidebar: sessions, context, activity, tool usage |
+| Right sidebar | `pi-ui-extension` 1.9.9 (sidebar subsystem) | Toggleable right sidebar: context, activity, tool usage (Sessions panel opt-in) |
 
 Pristine upstream sources for inspection live in `reference/` (gitignored, not shipped); the vendored, minimally patched copies the package actually loads live under `extensions/`. See `NOTICE.md` for every deviation and license attribution.
 
@@ -25,7 +25,7 @@ Requires Pi fullscreen TUI (`pi --tui-mode fullscreen`) for the stereo split and
 
 `/ui-settings` opens one panel that drives all four components' live settings through native Pi dialogs — no separate command memorization:
 
-- **Sidebar** — on/off, width, and the narrow-screen auto-hide threshold
+- **Sidebar** — on/off, width, the narrow-screen auto-hide threshold, and the Sessions panel visibility
 - **Pretty TUI** — enable/disable, render mode (full/compact/clean), and side borders; enabling/disabling reloads the session to apply the render patches
 - **Stereo split** — opens the upstream settings sheet (timestamps, copy buttons, compact tools, chat size mode)
 - **Powerline** — on/off, placement (above/below the editor), and status-line preset
@@ -37,11 +37,13 @@ Every change routes through each extension's own command/config path (via an in-
 - `/sidebar` — toggle; also `on`, `off`, `status`
 - `/sidebar width <columns>` — fixed width (clamped 24…48); `width default` restores 20% of terminal width
 - `/sidebar autohide [columns|off|default]` — narrow-terminal threshold
+- `/sidebar sessions [on|off]` — show or hide the Sessions panel (hidden by default)
 - `/sidebar status` — shows on/off plus whether it's currently hidden by width
 - `ctrl+alt+b` — toggle
 - Drag the sidebar's left divider to resize; width persists
 - Auto-hides on narrow terminals (phones): below 100 columns the sidebar hides itself and reappears automatically when the terminal is widened; tune with `/sidebar autohide <columns>`, `off`, or `default`
-- Contents: session switcher (relative times, context %, rename/delete), context usage estimate, live activity, per-tool call counts
+- Contents (default): context usage estimate, live activity, per-tool call counts
+- Sessions panel (opt-in via `/sidebar sessions on`): session switcher with relative times, context %, rename/delete. It scans the session directory on every settled run, so it is off by default; turn it on only if you use the in-sidebar switcher
 
 The sidebar mounts to the right of the stereo split automatically: it waits for the stereo layout to attach and is torn down before stereo restores the native layout, so the two never fight over the layout root.
 

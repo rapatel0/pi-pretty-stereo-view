@@ -69,6 +69,7 @@ async function sidebarMenu(ctx: ExtensionContext, sidebar: SidebarControls): Pro
       sidebar.autoHideBelow() === 0
         ? "Auto-hide on narrow screens: off"
         : `Auto-hide on narrow screens: below ${sidebar.autoHideBelow()} columns`,
+      `Sessions panel — ${sidebar.sessionsPanel() ? "shown" : "hidden"} (toggle)`,
       "Back",
     ]);
     if (!choice || choice === "Back") return "back";
@@ -81,6 +82,8 @@ async function sidebarMenu(ctx: ExtensionContext, sidebar: SidebarControls): Pro
       if (trimmed === "") sidebar.setWidth(undefined);
       else if (/^\d+$/.test(trimmed)) sidebar.setWidth(Math.max(24, Math.min(48, Number(trimmed))));
       else ctx.ui.notify("Width must be a number of columns", "warning");
+    } else if (choice.startsWith("Sessions panel — ")) {
+      sidebar.setSessionsPanel(choice.includes("hidden"));
     } else {
       const value = await ctx.ui.input("Auto-hide threshold", "hide the sidebar below this many columns; 0 = never");
       if (value === undefined) continue;

@@ -26,6 +26,8 @@ export type SidebarControls = {
   setWidth(width: number | undefined): void;
   autoHideBelow(): number;
   setAutoHideBelow(columns: number): void;
+  sessionsPanel(): boolean;
+  setSessionsPanel(on: boolean): void;
 };
 
 export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
@@ -33,6 +35,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   let enabled = settings.sidebarEnabled;
   let width = settings.sidebarWidth;
   let autoHideBelow = settings.sidebarAutoHideBelow;
+  let sessionsPanel = settings.sidebarSessionsPanel;
 
   let controller: SidebarController | undefined;
   let lastCtx: ExtensionContext | undefined;
@@ -47,7 +50,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
 
   const persist = (): void => {
     try {
-      saveSettings({ sidebarEnabled: enabled, sidebarWidth: width, sidebarAutoHideBelow: autoHideBelow });
+      saveSettings({ sidebarEnabled: enabled, sidebarWidth: width, sidebarAutoHideBelow: autoHideBelow, sidebarSessionsPanel: sessionsPanel });
     } catch {
       // Preferences are best-effort; the sidebar keeps working unsaved.
     }
@@ -63,7 +66,8 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
 
   const refresh = (): void => controller?.refresh();
   const refreshSessions = (): void => {
-    controller?.updatePanel(SESSION_PANEL_ID, undefined) ?? refresh();
+    if (!sessionsPanel) return;
+    if (!controller?.updatePanel(SESSION_PANEL_ID, undefined)) refresh();
   };
 
   // --- Context / activity / usage state backing the panels -----------------
@@ -215,7 +219,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
       finish = done;
       const install = (): void => {
         if (controller) return;
-        const panels = createDefaultSidebarPanels({
+        const definitions = createDefaultSidebarPanels({
           getContextUsage: () => ctx.getContextUsage(),
           getContextEstimate: () => contextEstimates.getSnapshot(),
           getContextDelta: () => contextEstimates.getDelta(),
@@ -239,19 +243,20 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
             ctx.ui.notify("Resource browsing is not part of this bundle", "info");
           },
         });
-        const next = installSidebar(tui, theme, panels, {
+        const panels = sessionsPanel ? definitions : definitions.filter((panel) => panel.id !== SESSION_PANEL_ID);
+        const installed = installSidebar(tui, theme, panels, {
           ...(width === undefined ? {} : { initialWidth: width }),
           onWidthChange: (liveWidth) => {
             width = liveWidth;
             persist();
           },
         });
-        if (next.mounted) {
-          controller = next;
+        if (installed.mounted) {
+          controller = installed;
           hiddenByWidth = false;
           fullscreenWarningShown = false;
         } else {
-          next.dispose();
+          installed.dispose();
           if (!fullscreenWarningShown) {
             fullscreenWarningShown = true;
             ctx.ui.notify("Sidebar needs Pi fullscreen mode (set it in /settings or start with --tui-mode fullscreen)", "warning");
@@ -341,6 +346,17 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
     autoHideBelow = Math.max(0, Math.min(200, columns));
     persist();
     if (reinstallRef) reinstallRef();
+  };
+
+  // Panel membership is decided at mount time, so a visibility change needs
+  // the same teardown/remount path as a width change.
+  const applySessions = (on: boolean): void => {
+    if (sessionsPanel === on) return;
+    sessionsPanel = on;
+    persist();
+    teardownController();
+    if (reinstallRef) reinstallRef();
+    else if (lastCtx) void mountSidebar(lastCtx);
   };
 
   onStereoDetaching(() => disposeSidebar());
@@ -434,6 +450,9 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
     handler: async (args, ctx) => {
       const [verb = "", id = ""] = (args ?? "").trim().split(/\s+/);
       if (verb !== "switch") return;
+      // With the Sessions panel hidden, nothing populates rowPaths; load on
+      // demand so the stable /sidebar-session surface keeps working.
+      if (!rowPaths.has(id)) await loadRows(ctx);
       const path = rowPaths.get(id);
       if (!path) {
         switchRequested = false;
@@ -455,7 +474,7 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
     },
   });
   pi.registerCommand("sidebar", {
-    description: "Toggle the right sidebar: /sidebar [on|off|toggle|width <columns>]",
+    description: "Toggle the right sidebar: /sidebar [on|off|toggle|width <columns>|sessions [on|off]]",
     handler: async (args, ctx) => {
       const action = (args ?? "").trim().toLowerCase();
       const [verb = "toggle", amount] = action.split(/\s+/);
@@ -478,21 +497,35 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
             : `Sidebar auto-hides below ${autoHideBelow} columns`,
           "info",
         );
+      } else if (verb === "sessions") {
+        if (amount !== undefined && amount !== "on" && amount !== "off") {
+          ctx.ui.notify("Usage: /sidebar sessions [on|off]", "warning");
+          return;
+        }
+        applySessions(amount === undefined ? !sessionsPanel : amount === "on");
+        ctx.ui.notify(
+          sessionsPanel
+            ? "Sidebar Sessions panel shown"
+            : "Sidebar Sessions panel hidden (re-enable: /sidebar sessions on)",
+          "info",
+        );
       } else if (verb === "status") {
-        const state = !enabled
-          ? "off"
-          : controller
-            ? "on"
-            : hiddenByWidth
-              ? `on but hidden — terminal is narrower than ${autoHideBelow} columns`
-              : "on (waiting for the split layout)";
+        let state: string;
+        if (enabled) {
+          if (controller) state = "on";
+          else if (hiddenByWidth) state = `on but hidden — terminal is narrower than ${autoHideBelow} columns`;
+          else state = "on (waiting for the split layout)";
+        } else {
+          state = "off";
+        }
         ctx.ui.notify(
           `Sidebar ${state}${width === undefined ? " (auto width)" : ` at ${width} columns`}; auto-hide ${
-            autoHideBelow === 0 ? "disabled" : `below ${autoHideBelow} columns`}`,
+            autoHideBelow === 0 ? "disabled" : `below ${autoHideBelow} columns`}; sessions panel ${
+            sessionsPanel ? "shown" : "hidden"}`,
           "info",
         );
       } else {
-        ctx.ui.notify("Usage: /sidebar [on|off|toggle|width <columns>|autohide [n|off|default]|status]", "warning");
+        ctx.ui.notify("Usage: /sidebar [on|off|toggle|width <columns>|sessions [on|off]|autohide [n|off|default]|status]", "warning");
       }
     },
   });
@@ -502,11 +535,13 @@ export function installSidebarHost(pi: ExtensionAPI): SidebarControls {
   });
 
   return {
-    statusLine: () => `${enabled ? "on" : "off"} · width ${width ?? "auto"} · ${autoHideBelow === 0 ? "auto-hide off" : `auto-hide below ${autoHideBelow} cols`}${hiddenByWidth ? " · hidden now" : ""}`,
+    statusLine: () => `${enabled ? "on" : "off"} · width ${width ?? "auto"} · ${autoHideBelow === 0 ? "auto-hide off" : `auto-hide below ${autoHideBelow} cols`} · sessions ${sessionsPanel ? "on" : "off"}${hiddenByWidth ? " · hidden now" : ""}`,
     isEnabled: () => enabled,
     setEnabled,
     setWidth: applyWidth,
     autoHideBelow: () => autoHideBelow,
     setAutoHideBelow: applyAutoHide,
+    sessionsPanel: () => sessionsPanel,
+    setSessionsPanel: applySessions,
   };
 }

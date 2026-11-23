@@ -19,7 +19,7 @@ After 1.0.0: strict SemVer — breaking changes require a major.
 
 - Commands and their arguments: `/sidebar`, `/sidebar-session`, and everything inherited from the vendored extensions (`/stereo-view`, `/powerline`, `/pretty-tui`, …)
 - Shortcuts: `ctrl+alt+b`, `ctrl+alt+t`, `ctrl+alt+s`, `ctrl+alt+arrows`
-- Config files and key semantics: `pi-pretty-stereo-view.json` (`sidebar.enabled`, `sidebar.width`, `sidebar.autoHideBelowColumns`), `pretty-tui.json` (incl. `sideBorders`), `transcript.json`
+- Config files and key semantics: `pi-pretty-stereo-view.json` (`sidebar.enabled`, `sidebar.width`, `sidebar.autoHideBelowColumns`, `sidebar.sessionsPanel`), `pretty-tui.json` (incl. `sideBorders`), `transcript.json`
 - Removing/renaming any of the above, changing a key's meaning, changing a
   default layout users rely on, or raising the Pi peer floor across a Pi major.
 
